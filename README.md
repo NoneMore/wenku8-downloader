@@ -199,6 +199,7 @@ pnpm dev -- --help
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm test:governance
 pnpm build
 pnpm check
 ```
@@ -220,7 +221,7 @@ CLI -> Downloader -> Wenku8Client -> HttpClient
 
 ## 项目治理
 
-本仓库采用以代码为事实依据的轻量治理模型。共享规则见 [项目治理约定](docs/governance.md)，当前模块与关键边界见 [架构概览](docs/architecture/overview.md)。重要架构决策按需记录为 ADR，复杂变更可以使用 Change 目录；简单改动无需额外流程。编码 Agent 可从 [AGENTS.md](AGENTS.md) 获取导航。
+本仓库以代码为已实现行为的事实依据。规格生命周期、PR 流程和 ADR 约定见 [项目治理约定](docs/governance.md)，当前模块与关键边界见 [架构概览](docs/architecture/overview.md)。编码 Agent 可从 [AGENTS.md](AGENTS.md) 获取导航。
 
 ## Docker
 

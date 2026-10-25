@@ -26,8 +26,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:governance": "node --test scripts/check-spec-lifecycle.cases.mjs",
     "test:watch": "vitest",
-    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:governance && pnpm build",
     "prepack": "pnpm check"
   },
   "repository": {

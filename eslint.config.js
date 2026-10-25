@@ -20,4 +20,8 @@ export default tseslint.config(
       '@typescript-eslint/no-misused-promises': 'error',
     },
   },
+  {
+    files: ['scripts/**/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
 );

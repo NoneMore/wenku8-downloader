@@ -1,0 +1,23 @@
+name: Specification lifecycle
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  spec-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Require new active specifications and final archival
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-spec-lifecycle.mjs "$BASE_SHA" "$HEAD_SHA" HEAD
