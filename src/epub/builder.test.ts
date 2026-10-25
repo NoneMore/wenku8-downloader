@@ -10,9 +10,10 @@ import { sha256 } from '../domain/ids.js';
 import { EpubBuilder } from './builder.js';
 
 const execFileAsync = promisify(execFile);
+const timeout = process.env.CI_EPUBCHECK === '1' ? 30_000 : 5_000;
 
 describe('EpubBuilder', () => {
-  it('builds an EPUB with the uncompressed mimetype entry first', async () => {
+  it('builds an EPUB with uncompressed mimetype first', { timeout }, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-epub-'));
     const image = await sharp({
       create: { width: 8, height: 8, channels: 3, background: '#ffffff' },
