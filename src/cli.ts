@@ -537,9 +537,15 @@ async function runDownload(
   reference: string | number,
   options: Partial<DownloadCliOptions>,
 ): Promise<void> {
-  const illustrationMap = options.illustrationMap
-    ? parseIllustrationMap(JSON.parse(await readFile(options.illustrationMap, 'utf8')) as unknown)
-    : undefined;
+  if (options.illustrationMap !== undefined && options.illustrationMap.trim() === '') {
+    throw new Error('--illustration-map 路径不能为空');
+  }
+  const illustrationMap =
+    options.illustrationMap === undefined
+      ? undefined
+      : parseIllustrationMap(
+          JSON.parse(await readFile(options.illustrationMap, 'utf8')) as unknown,
+        );
   const controller = new AbortController();
   process.once('SIGINT', () => controller.abort(new Error('用户取消')));
   const labels = new Map<string, string>();

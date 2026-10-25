@@ -4,6 +4,8 @@ import {
   applyIllustrationLayout,
   chapterSha256,
   parseIllustrationMap,
+  sourceSnapshotSha256,
+  IllustrationMapError,
   type IllustrationMap,
 } from './illustration-layout.js';
 import { prepareIllustrationLayout } from '../service/illustration-layout.js';
@@ -231,6 +233,49 @@ describe('verified illustration layout', () => {
     expect(() => parseIllustrationMap({ ...map, extra: true })).toThrow(/MAP_INVALID/);
     map.entries[0]!.evidence.reference = '  ';
     expect(() => parseIllustrationMap(map)).toThrow(/MAP_INVALID/);
+  });
+  it('reports the first invalid map field without echoing unknown input keys', () => {
+    const map = mapping(fixture());
+    map.entries[0]!.image.assetSha256 = 'bad';
+    try {
+      parseIllustrationMap(map);
+      expect.fail('Expected schema failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(IllustrationMapError);
+      expect(error).toMatchObject({
+        code: 'MAP_INVALID',
+        entryIndex: 0,
+        issue: { path: 'entries[0].image.assetSha256' },
+      });
+      if (!(error instanceof IllustrationMapError)) throw error;
+      expect(error.issue?.message.length).toBeGreaterThan(0);
+      expect(error.message).toContain('entries[0].image.assetSha256');
+    }
+    const withUnknownKey = { ...mapping(fixture()), 'synthetic-secret-key': true };
+    expect(() => parseIllustrationMap(withUnknownKey)).toThrow(/Unrecognized field/);
+    expect(() => parseIllustrationMap(withUnknownKey)).not.toThrow(/synthetic-secret-key/);
+  });
+  it('restores URLs without requiring unique chapter URLs when no map is supplied', () => {
+    const book = fixture();
+    const [first, second] = book.volumes[0]!.chapters;
+    first!.blocks.push({ type: 'paragraph', text: `[IMG]${imageUrl}?one[/IMG]` });
+    second!.sourceUrl = first!.sourceUrl;
+    second!.blocks.push({ type: 'paragraph', text: `[IMG]${imageUrl}?two[/IMG]` });
+    const before = structuredClone(book);
+    const prepared = prepareIllustrationLayout(book);
+    expect(prepared.report.mode).toBe('references');
+    expect(prepared.report.counts.recoveredUrls).toBe(2);
+    expect(prepared.plan.entries).toEqual([]);
+    expect(prepared.book.volumes[0]!.chapters[0]!.blocks.at(-1)).toMatchObject({
+      type: 'image',
+      sourceUrl: `${imageUrl}?one`,
+    });
+    expect(prepared.book.volumes[0]!.chapters[1]!.blocks.at(-1)).toMatchObject({
+      type: 'image',
+      sourceUrl: `${imageUrl}?two`,
+    });
+    expect(prepared.report.sourceSnapshotSha256).toBe(sourceSnapshotSha256(book));
+    expect(book).toEqual(before);
   });
   it('restores URLs without removing gallery duplicates or creating missing symbol images', () => {
     const book = fixture();

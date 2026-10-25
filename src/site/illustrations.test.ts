@@ -65,9 +65,11 @@ describe('illustration markers', () => {
     '[IMG]https://example.test/a.jpg[/IMG][IMG]https://example.test/b.jpg[/IMG]',
     '[IMG]https://example.test/a b.jpg[/IMG]',
     '[IMG]https://example.test/a.htm[/IMG]',
+    'IMG]https://example.test/a.htm[/IMG]',
+    '正文提到 [/IMG]',
     '[IMG]https://example.test/a.jpg',
   ])('never restores unsupported or mixed URL text: %s', (text) => {
-    expect(detectIllustrationMarker({ type: 'paragraph', text })?.kind).not.toBe('url');
+    expect(detectIllustrationMarker({ type: 'paragraph', text })).toBeUndefined();
   });
   it('diagnoses split packed references without inventing their missing URL parameters', () => {
     const packed = parsePackedChapter('[IMG]https://example.test/a.jpg?size=large[/IMG]', chapter);

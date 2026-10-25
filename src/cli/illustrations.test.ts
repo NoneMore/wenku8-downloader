@@ -52,6 +52,22 @@ async function run(root: string, args: string[]) {
 }
 
 describe('offline illustrations CLI', () => {
+  it('rejects explicitly empty map paths before login, network or workspace creation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-map-cli-'));
+    directories.push(root);
+    for (const args of [
+      ['--illustration-map='],
+      ['--illustration-map', ''],
+      ['--illustration-map', '   '],
+    ]) {
+      const result = await run(root, ['download', '42', '-w', path.join(root, 'work'), ...args]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('--illustration-map 路径不能为空');
+      expect(result.stdout).toBe('');
+      expect(await readdir(root)).toEqual(['preload.mjs']);
+    }
+  }, 15_000);
+
   it('emits one JSON object for complete, partial and fatal results without login or workspace creation', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-illustrations-cli-'));
     directories.push(root);
@@ -112,6 +128,9 @@ describe('offline illustrations CLI', () => {
         blocks: [
           { type: 'paragraph', text: '正文不得出现在报告' },
           { type: 'paragraph', text: '（插图001）' },
+          { type: 'paragraph', text: '[IMG]https://example.test/a.htm[/IMG]' },
+          { type: 'paragraph', text: 'IMG]https://example.test/a.htm[/IMG]' },
+          { type: 'paragraph', text: '正文提到 [/IMG]' },
         ],
       }),
     );
@@ -134,6 +153,8 @@ describe('offline illustrations CLI', () => {
     );
     expect(report.status).toBe('complete');
     expect(report.counts.symbolMarkers).toBe(1);
+    expect(report.counts.legacyUrlFragments).toBe(0);
+    expect(report.diagnostics).toEqual([]);
     expect(complete.stdout).not.toContain('正文不得');
     expect(await readFile(path.join(directory, 'manifest.json'), 'utf8')).toBe(before);
     const human = await run(root, ['illustrations', '42', '-w', work]);

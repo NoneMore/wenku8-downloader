@@ -179,7 +179,7 @@ export class Downloader {
 
     let book: Book = { ...details, volumes, assets: [] };
     const layout =
-      options.relocateIllustrations || options.illustrationMap
+      options.relocateIllustrations || options.illustrationMap !== undefined
         ? prepareIllustrationLayout(book, options.illustrationMap)
         : undefined;
     if (layout) book = layout.book;
@@ -238,7 +238,7 @@ export class Downloader {
       }
     }
     if (layout) {
-      book = applyIllustrationLayout(book, layout.plan);
+      if (layout.plan.entries.length) book = applyIllustrationLayout(book, layout.plan);
       await workspace.writeJson('illustration-layout.json', layout.report);
       emit({
         phase: 'images',

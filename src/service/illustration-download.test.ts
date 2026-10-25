@@ -214,7 +214,10 @@ describe('illustration download integration', () => {
   );
 
   it('keeps the existing missing-image policy for recovered URLs', async () => {
-    const { options, downloader, bytes, urlMarkerImage } = await fixture();
+    const { options, downloader, bytes, urlMarkerImage, first } = await fixture();
+    const previousEpub = await readFile(first.epubPath);
+    const bookPath = path.join(first.workspaceDirectory, 'book.json');
+    const previousBook = await readFile(bookPath, 'utf8');
     const original = bytes.getMockImplementation()!;
     bytes.mockImplementation((url, ...args) =>
       url === urlMarkerImage
@@ -224,6 +227,22 @@ describe('illustration download integration', () => {
     await expect(
       downloader.download(42, { ...options, relocateIllustrations: true }),
     ).rejects.toThrow(/缺少图片/);
+    expect(await readFile(first.epubPath)).toEqual(previousEpub);
+    expect(await readFile(bookPath, 'utf8')).not.toBe(previousBook);
+    const attemptedBook = JSON.parse(await readFile(bookPath, 'utf8')) as typeof first.book;
+    expect(attemptedBook.volumes[0]!.chapters[0]!.blocks[3]).toEqual({
+      type: 'image',
+      sourceUrl: urlMarkerImage,
+      alt: '插图',
+    });
+    const attemptedLayout = JSON.parse(
+      await readFile(path.join(first.workspaceDirectory, 'illustration-layout.json'), 'utf8'),
+    ) as { mode: string; counts: { recoveredUrls: number } };
+    expect(attemptedLayout).toMatchObject({ mode: 'references', counts: { recoveredUrls: 1 } });
+    const manifest = JSON.parse(
+      await readFile(path.join(first.workspaceDirectory, 'manifest.json'), 'utf8'),
+    ) as { resources: { epub: { state: string } } };
+    expect(manifest.resources.epub.state).toBe('failed');
     const result = await downloader.download(42, {
       ...options,
       relocateIllustrations: true,

@@ -1,7 +1,6 @@
 import type { Book } from '../domain/book.js';
 import {
   chapterSha256,
-  parseIllustrationMap,
   planIllustrationLayout,
   sourceCoordinateKey,
   sourceSnapshotSha256,
@@ -44,19 +43,24 @@ export function prepareIllustrationLayout(
   report: IllustrationLayoutReport;
 } {
   const book = structuredClone(source);
+  const chapterDigests = new Map(
+    source.volumes.flatMap((volume) =>
+      volume.chapters.map((chapter) => [chapter, chapterSha256(chapter)] as const),
+    ),
+  );
   const eligibleTargets = new Set<string>();
   const report: IllustrationLayoutReport = {
     version: 1,
     bookId: source.id,
-    mode: map ? 'map' : 'references',
-    sourceSnapshotSha256: sourceSnapshotSha256(source),
-    mapSha256: map ? sha256(Buffer.from(JSON.stringify(parseIllustrationMap(map)))) : null,
+    mode: map === undefined ? 'references' : 'map',
+    sourceSnapshotSha256: sourceSnapshotSha256(source, chapterDigests),
+    mapSha256: null,
     counts: { recoveredUrls: 0, appliedMappings: 0, unresolvedSymbols: 0, legacyUrlFragments: 0 },
     diagnostics: [],
   };
   for (const [volumeIndex, volume] of book.volumes.entries()) {
-    for (const chapter of volume.chapters) {
-      const digest = chapterSha256(chapter);
+    for (const [chapterIndex, chapter] of volume.chapters.entries()) {
+      const digest = chapterDigests.get(source.volumes[volumeIndex]!.chapters[chapterIndex]!)!;
       chapter.blocks = chapter.blocks.map((block, blockIndex) => {
         const marker = detectIllustrationMarker(block);
         if (!marker) return block;
@@ -78,11 +82,14 @@ export function prepareIllustrationLayout(
       });
     }
   }
-  const plan = planIllustrationLayout(
-    source,
-    map ?? { version: 1, bookId: source.id, entries: [] },
-    eligibleTargets,
-  );
+  const plan: IllustrationPlan =
+    map === undefined
+      ? { entries: [], emptyImageChapters: new Set() }
+      : planIllustrationLayout(source, map, eligibleTargets, chapterDigests);
+  if (map !== undefined)
+    report.mapSha256 = sha256(
+      Buffer.from(JSON.stringify({ version: 1, bookId: source.id, entries: plan.entries })),
+    );
   const mappedTargets = new Set(plan.entries.map((entry) => sourceCoordinateKey(entry.target)));
   report.diagnostics = report.diagnostics.filter(
     (item) => !mappedTargets.has(sourceCoordinateKey(item)),

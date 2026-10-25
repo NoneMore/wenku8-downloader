@@ -31,7 +31,7 @@ export function detectIllustrationMarker(block: ContentBlock): IllustrationMarke
   ) {
     return { kind: 'symbol', marker: block.text };
   }
-  if (/^(?:\[IMG\]|IMG\])$/i.test(text) || /\[\/IMG\]$/i.test(text)) {
+  if (/^(?:\[IMG\]|IMG\]|(?:[?#]\S*)?\[\/IMG\])$/i.test(text)) {
     return { kind: 'fragment' };
   }
 }

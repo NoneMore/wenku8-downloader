@@ -60,6 +60,8 @@ Domain types and errors are used across layers.
 
 `illustrations` 命令走独立的只读检查路径，不加载会话或调用 `BookWorkspace.open()`。它以 Manifest v1、缓存目录与完成的源章节为输入，检查本地图片字节并输出版本化报告；缺项产生部分或错误状态。`book.json` 仅能辅助查找资源文件，不作为检查的章节来源。
 
+仅恢复 URL 时跳过映射身份规划及应用阶段的复制；显式映射继续校验章节 URL 唯一。源章节摘要在一次准备调用中计算后复用。离线候选检查刻意执行完整像素解码，比 `ImageStore` 现有缓存复用的元数据检查更严格，以拒绝只有文件头可读的损坏图片。
+
 ## 恢复与持久化边界
 
 CLI 默认使用用户配置目录中的 `workspace/` 和 `downloads/`，可通过 `--work-dir`、`--output` 修改。直接以库方式调用 `Downloader` 时，其未指定目录的默认行为以 `Downloader.download()` 的实现为准，不应推定与 CLI 完全相同。
@@ -80,7 +82,7 @@ workspace/<book-id>/
 - [`src/storage/workspace.ts`](../../src/storage/workspace.ts) 管理 Manifest 读写、工作区目录和文件缓存；文件写入采用临时文件后重命名，Manifest 写入以 Promise 链串行化。
 - [`src/storage/paths.ts`](../../src/storage/paths.ts) 对输出文件名做规范化，工作区另有路径越界检查。
 - 编排层依据持久化记录和文件存在情况复用资源；`ImageStore` 会对被复用的图片重新检查数据。
-- 可选插图布局只派生本次 `book.json` 和 `illustration-layout.json`，不覆盖 `raw/`、`chapters/` 或升级 Manifest。映射绑定原始块坐标、章节摘要和图片文件摘要，每次重新校验；未启用布局时从源章节生成原排列。布局报告是最近一次启用布局的派生记录，不用于恢复或判断下载完成。
+- 可选插图布局只派生本次 `book.json` 和 `illustration-layout.json`，不覆盖 `raw/`、`chapters/` 或升级 Manifest。映射绑定原始块坐标、章节摘要和图片文件摘要，每次重新校验；未启用布局时从源章节生成原排列。书稿及布局报告在映射校验后、EPUB 构建前写入，表示最近一次布局尝试，不用于恢复或判断导出完成；后续构建失败可保留旧 EPUB，成功状态以构建结果及 Manifest 为准。
 
 Manifest schema、资源状态、缓存复用及目录语义均属于兼容性边界。变更它们时，评估旧工作区迁移和中断后的恢复行为，而不只是检查新版本单次运行是否成功。
 

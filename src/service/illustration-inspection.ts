@@ -219,6 +219,8 @@ export async function inspectIllustrations(
           !['jpeg', 'png', 'gif'].includes(metadata.format ?? '')
         )
           throw new Error('Invalid normalized image');
+        // Map candidates must have decodable pixels; metadata-only cache reuse can miss payload damage.
+        // This stronger offline check costs a full decode once per distinct source URL.
         await sharp(data, { animated: true, failOn: 'error' }).stats();
         return { relativePath, assetSha256: sha256(data) };
       } catch (error) {

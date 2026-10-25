@@ -186,11 +186,12 @@ describe('offline illustration inspection', () => {
     'identity',
     'image-missing',
     'image-invalid',
+    'image-payload',
     'image-escape',
     'no-source',
     'fragment',
   ])('preserves inspected results in a partial %s report', async (scenario) => {
-    const { root, workspace, body, gallery } = await fixture();
+    const { root, workspace, body, gallery, image } = await fixture();
     switch (scenario) {
       case 'incomplete':
         await workspace.mark(`chapter:${body.id}`, { kind: 'chapter', state: 'pending' });
@@ -216,6 +217,16 @@ describe('offline illustration inspection', () => {
       case 'image-invalid':
         await workspace.writeAtomic('assets/images/test.png', 'not an image');
         break;
+      case 'image-payload': {
+        const damaged = Buffer.from(image);
+        const payload = damaged.indexOf(Buffer.from('IDAT')) + 4;
+        damaged[payload] = damaged[payload]! ^ 255;
+        await expect(
+          sharp(damaged, { animated: true, failOn: 'error' }).metadata(),
+        ).resolves.toMatchObject({ width: 8, height: 8 });
+        await workspace.writeAtomic('assets/images/test.png', damaged);
+        break;
+      }
       case 'image-escape':
         await workspace.mark('illustration:test', {
           kind: 'image',
@@ -248,6 +259,7 @@ describe('offline illustration inspection', () => {
       identity: 'CHAPTER_INVALID',
       'image-missing': 'IMAGE_FILE_MISSING',
       'image-invalid': 'IMAGE_FILE_INVALID',
+      'image-payload': 'IMAGE_FILE_INVALID',
       'image-escape': 'IMAGE_FILE_INVALID',
       'no-source': 'IMAGE_SOURCE_MISSING',
       fragment: 'LEGACY_URL_FRAGMENT',

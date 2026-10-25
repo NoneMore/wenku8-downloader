@@ -42,12 +42,18 @@ export function sourceCoordinateKey(
   return JSON.stringify([position.chapterUrl, position.blockIndex]);
 }
 
-export function sourceSnapshotSha256(book: Book): string {
+export function sourceSnapshotSha256(
+  book: Book,
+  chapterDigests?: ReadonlyMap<Chapter, string>,
+): string {
   return sha256(
     Buffer.from(
       JSON.stringify(
         book.volumes.map((volume) =>
-          volume.chapters.map((chapter) => [chapter.sourceUrl, chapterSha256(chapter)]),
+          volume.chapters.map((chapter) => [
+            chapter.sourceUrl,
+            chapterDigests?.get(chapter) ?? chapterSha256(chapter),
+          ]),
         ),
       ),
       'utf8',
@@ -59,8 +65,11 @@ export class IllustrationMapError extends Error {
   constructor(
     readonly code: string,
     readonly entryIndex?: number,
+    readonly issue?: { path: string; message: string },
   ) {
-    super(`插图映射校验失败：${code}${entryIndex === undefined ? '' : ` (entry ${entryIndex})`}`);
+    super(
+      `插图映射校验失败：${code}${entryIndex === undefined ? '' : ` (entry ${entryIndex})`}${issue ? `: ${issue.path || '<root>'}: ${issue.message}` : ''}`,
+    );
     this.name = 'IllustrationMapError';
   }
 }
@@ -71,7 +80,22 @@ export function parseIllustrationMap(value: unknown): IllustrationMap {
     const issue = parsed.error.issues[0];
     const entryIndex =
       issue?.path[0] === 'entries' && typeof issue.path[1] === 'number' ? issue.path[1] : undefined;
-    throw new IllustrationMapError('MAP_INVALID', entryIndex);
+    throw new IllustrationMapError(
+      'MAP_INVALID',
+      entryIndex,
+      issue
+        ? {
+            path: issue.path
+              .map((segment, index) =>
+                typeof segment === 'number'
+                  ? `[${segment}]`
+                  : `${index ? '.' : ''}${String(segment)}`,
+              )
+              .join(''),
+            message: issue.code === 'unrecognized_keys' ? 'Unrecognized field' : issue.message,
+          }
+        : undefined,
+    );
   }
   return parsed.data;
 }
@@ -86,6 +110,7 @@ export function planIllustrationLayout(
   book: Book,
   value: unknown,
   eligibleTargets: ReadonlySet<string>,
+  chapterDigests?: ReadonlyMap<Chapter, string>,
 ): IllustrationPlan {
   const map = parseIllustrationMap(value);
   if (map.bookId !== book.id) throw new IllustrationMapError('BOOK_ID_MISMATCH');
@@ -93,7 +118,11 @@ export function planIllustrationLayout(
   for (const [volumeIndex, volume] of book.volumes.entries()) {
     for (const chapter of volume.chapters) {
       if (chapters.has(chapter.sourceUrl)) throw new IllustrationMapError('CHAPTER_URL_AMBIGUOUS');
-      chapters.set(chapter.sourceUrl, { chapter, volumeIndex, digest: chapterSha256(chapter) });
+      chapters.set(chapter.sourceUrl, {
+        chapter,
+        volumeIndex,
+        digest: chapterDigests?.get(chapter) ?? chapterSha256(chapter),
+      });
     }
   }
   const targets = new Set<string>();
