@@ -1,6 +1,8 @@
 # HTTP 代理与环境变量继承
 
-本文定义待实施功能的需求与验收条件，不代表当前代码已经支持代理。范围调整直接更新本文，并同步受影响的行为、边界与验收条件。
+本文保留本次功能的需求与验收条件。实现与验证结果见文末；后续需求使用新的 Change，不将未覆盖环境视为已经验证。
+
+归档原因：约定范围已实施并通过本地验收，代理策略、三条传输路径、CLI、回归测试与使用文档已完成；远程检查由 [PR #4](https://github.com/NoneMore/wenku8-downloader/pull/4) 继续验证。
 
 ## 目标与已确定的选择
 
@@ -15,7 +17,7 @@
 - 环境变量同时支持大小写名称；同名的两种大小写同时存在时，非空小写值优先。
 - `NO_PROXY` 首版支持逗号列表、域名及子域名、精确 IP 和 `*`；暂不支持端口限定与 CIDR 网段。
 
-## 现状与影响范围
+## 变更前实现与影响范围
 
 - [`src/http/client.ts`](../../../src/http/client.ts) 集中处理 Node `fetch`、curl、重定向、限速、超时与重试，但没有统一的代理选项或环境变量解析。curl 子进程继承进程环境，程序未显式统一其代理行为。
 - [`src/auth/login.ts`](../../../src/auth/login.ts) 直接登录使用 Node；[`src/auth/browser.ts`](../../../src/auth/browser.ts) 必要时启动 Playwright 浏览器，并分别使用 curl、Node 验证会话交接。当前没有向浏览器传递统一代理策略。
@@ -122,13 +124,28 @@
 
 README 和 CLI 帮助需说明覆盖顺序、支持的变量、仅 HTTP 无认证的边界，以及 `NO_PROXY` 的匹配范围。至少提供 PowerShell 和 POSIX shell 的环境变量示例，并说明 `HTTPS_PROXY=http://127.0.0.1:7890` 是为 HTTPS 目标选择 HTTP 代理。实现完成后同步架构概览中的统一网络策略。
 
-## 实施准备与未决事项
+## 实施选择与未决事项
 
-没有尚待用户决定的产品范围。代理解析与传输适配的代码组织、依赖选择、连接复用及资源释放接口由实现确定，须满足上述行为与最低运行时要求。
+没有尚待用户决定的产品范围。实现使用统一 `ProxyPolicy`，Node 使用 undici 7（依赖要求 Node.js >=20.18.1，与项目最低版本兼容），curl 显式传递解析结果并禁用用户代理配置；库调用通过 `proxy?: string | false` 表达三种模式。
 
-实施前需验证浏览器适配能同时表达按目标协议选择代理、基础绕过列表和强制直连，尤其不能直接假定一份 Playwright `proxy.server` 配置覆盖所有组合。若候选方案无法满足，先记录技术限制并更新方案，不能静默缩减已确定的三条路径一致性要求。
+浏览器使用临时本地 HTTP 转发服务，执行相同的逐目标策略，CONNECT 保持字节隧道而不终止 TLS。真实 Edge 网络测试已覆盖不同协议使用不同代理、部分协议直连、绕过和强制直连；登录完成、取消或失败时释放浏览器和转发连接。代理错误按实际页面请求的目标归属，避免浏览器后台流量干扰登录结果。
 
 参考资料只用于核实底层能力，不覆盖本文已确定的产品规则：
 
 - [curl 环境变量文档](https://curl.se/docs/manpage.html#ENVIRONMENT) 记载其变量与绕过行为；其中 `HTTP_PROXY` 的大小写例外和显式代理仍受 `NO_PROXY` 影响等规则与本次约定不同，需要显式适配。
 - [Playwright HTTP 代理文档](https://playwright.dev/docs/network#http-proxy) 提供浏览器 / 上下文代理及绕过入口，但不足以单独证明本规格所有路由组合已经可用。
+
+## 验收结果与验证证据
+
+2026-10-25，在 Windows / Node.js 24.19.0 / Edge 环境完成本地验证：
+
+- `pnpm check` 通过：20 个测试文件的 224 项测试、14 项治理场景、类型检查、lint 和构建全部通过。
+- [`src/http/proxy.test.ts`](../../../src/http/proxy.test.ts) 使用实际本地代理与 HTTP/HTTPS 服务验证环境变量、显式覆盖、绕过、HTTP 转发、CONNECT、证书校验、跨协议与跨主机重定向、超时、取消、407 和 Node/curl 回退。测试隔离宿主代理环境；模拟站点不会连接真实站点。
+- 同一测试文件中的真实 Edge 验证页面、表单、子资源、重定向、协议分别选代理、部分直连、绕过与强制直连；真实浏览器表单登录后，CLI 经同一代理验证并接收 CookieJar。Node/curl 端到端下载覆盖详情、目录、章节、封面和插图；一次章节失败后恢复，完成章节与其他缓存未被重复获取。
+- [`src/auth/browser.test.ts`](../../../src/auth/browser.test.ts) 保留人工验证等待、失败、取消和清理回归；[`src/site/client.test.ts`](../../../src/site/client.test.ts) 与 [`src/service/downloader.test.ts`](../../../src/service/downloader.test.ts) 验证代理配置错误及 407 不被下载包候选回退、章节整轮重试或缺图放宽吞掉，修复配置后仍能复用已完成章节。
+- `npm pack --dry-run --ignore-scripts --json` 预检通过：122 个文件包含代理模块及类型声明，不包含测试证书、测试私钥或用户会话。CLI 帮助及 README 已提供代理边界、覆盖顺序和 PowerShell / POSIX 示例，架构概览已同步。
+- 新增模块及已整理的 CLI、认证模块、使用文档通过定向 Prettier 检查；`git diff --check` 通过。未对仓库既有文件做无关格式重写。
+
+测试证书、密钥与登录数据均为本地模拟样例。Node/curl 的信任校验仅为相应测试进程添加测试 CA；浏览器测试仅信任样例证书的 SPKI。生产代码未关闭证书验证。Windows curl 的本地 TLS 测试需在沙箱外运行；已在该环境执行完整检查。
+
+没有已知未完成的约定实现项。未使用真实账号完成代理实站验收；macOS 与最低 Node.js 22.13 未单独实测。远程 Linux/Chromium、EPUBCheck 与最终规格生命周期结果以 PR 检查记录为准，不以本地 Edge 结果代替其他平台证据。
