@@ -10,17 +10,20 @@ wenku8-downloader 是 Node.js / TypeScript 的命令行轻小说下载器。它�
 
 ## 模块职责
 
-| 位置                                                           | 当前职责                                                           |
-| -------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [`src/cli.ts`](../../src/cli.ts)、[`src/cli/`](../../src/cli/) | 命令解析、交互界面、登录态、进度与 EPUBCheck 调用                  |
-| [`src/auth/`](../../src/auth/)                                 | 账号登录编排、独立浏览器验证、会话验证与用户级持久化               |
-| [`src/domain/`](../../src/domain/)                             | Book、Volume、Chapter、Asset 等数据模型、ID、错误和完整性校验      |
-| [`src/site/`](../../src/site/)                                 | 站点 URL、GBK/GB18030 文本与 HTML 结构解析                         |
-| [`src/http/client.ts`](../../src/http/client.ts)               | 请求队列、Cookie 请求、超时、限速、重试、429 冷却、curl 回退和统计 |
-| [`src/service/downloader.ts`](../../src/service/downloader.ts) | 详情与章节下载的编排、整轮重试、图片任务聚合、EPUB 生成            |
-| [`src/storage/`](../../src/storage/)                           | Manifest、缓存及工作区、文件路径处理                               |
-| [`src/assets/image-store.ts`](../../src/assets/image-store.ts) | 图片获取、解码验证、格式规范化与缓存复用                           |
-| [`src/epub/`](../../src/epub/)                                 | XHTML/导航渲染、资源清单、ZIP 打包及包内引用检查                   |
+| 位置                                                                                                                                                           | 当前职责                                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`src/cli.ts`](../../src/cli.ts)、[`src/cli/`](../../src/cli/)                                                                                                 | 命令解析、交互界面、登录态、进度与 EPUBCheck 调用                  |
+| [`src/auth/`](../../src/auth/)                                                                                                                                 | 账号登录编排、独立浏览器验证、会话验证与用户级持久化               |
+| [`src/domain/`](../../src/domain/)                                                                                                                             | Book、Volume、Chapter、Asset 等数据模型、ID、错误和完整性校验      |
+| [`src/site/`](../../src/site/)                                                                                                                                 | 站点 URL、GBK/GB18030 文本与 HTML 结构解析                         |
+| [`src/site/illustrations.ts`](../../src/site/illustrations.ts)                                                                                                 | Wenku8 完整段落插图标记与旧 URL 碎片检测                           |
+| [`src/domain/illustration-layout.ts`](../../src/domain/illustration-layout.ts)                                                                                 | 源块摘要、严格映射校验及整体块移动，不解释站点标记或访问网络       |
+| [`src/service/illustration-layout.ts`](../../src/service/illustration-layout.ts)、[`illustration-inspection.ts`](../../src/service/illustration-inspection.ts) | 布局准备和诊断、离线源缓存检查与图片文件核验                       |
+| [`src/http/client.ts`](../../src/http/client.ts)                                                                                                               | 请求队列、Cookie 请求、超时、限速、重试、429 冷却、curl 回退和统计 |
+| [`src/service/downloader.ts`](../../src/service/downloader.ts)                                                                                                 | 详情与章节下载的编排、整轮重试、图片任务聚合、EPUB 生成            |
+| [`src/storage/`](../../src/storage/)                                                                                                                           | Manifest、缓存及工作区、文件路径处理                               |
+| [`src/assets/image-store.ts`](../../src/assets/image-store.ts)                                                                                                 | 图片获取、解码验证、格式规范化与缓存复用                           |
+| [`src/epub/`](../../src/epub/)                                                                                                                                 | XHTML/导航渲染、资源清单、ZIP 打包及包内引用检查                   |
 
 关键依赖关系示意：
 
@@ -53,6 +56,10 @@ Domain types and errors are used across layers.
 5. `ImageStore` 获取封面、插图，检验能否解码，将不兼容的图片格式转换为支持的格式；相关资源写入工作区。
 6. 书稿和资源登记完成后，`EpubBuilder` 执行完整性校验，渲染 XHTML / 导航 / 资源表，检查图片引用，生成 EPUB。
 
+`download` 的可选插图布局在加载源章节后准备：站点检测器识别完整 URL 和符号标记，领域模块对原坐标和源块摘要建立整体映射计划；图片仍统一经过 `ImageStore` 获取并绑定资源，核实映射所需实际字节摘要后才移动块。EPUB 层继续只处理普通图片块。编号不会自动解释为图库序号；旧下载包已拆散的 URL 标记只报告限制。
+
+`illustrations` 命令走独立的只读检查路径，不加载会话或调用 `BookWorkspace.open()`。它以 Manifest v1、缓存目录与完成的源章节为输入，检查本地图片字节并输出版本化报告；缺项产生部分或错误状态。`book.json` 仅能辅助查找资源文件，不作为检查的章节来源。
+
 ## 恢复与持久化边界
 
 CLI 默认使用用户配置目录中的 `workspace/` 和 `downloads/`，可通过 `--work-dir`、`--output` 修改。直接以库方式调用 `Downloader` 时，其未指定目录的默认行为以 `Downloader.download()` 的实现为准，不应推定与 CLI 完全相同。
@@ -73,6 +80,7 @@ workspace/<book-id>/
 - [`src/storage/workspace.ts`](../../src/storage/workspace.ts) 管理 Manifest 读写、工作区目录和文件缓存；文件写入采用临时文件后重命名，Manifest 写入以 Promise 链串行化。
 - [`src/storage/paths.ts`](../../src/storage/paths.ts) 对输出文件名做规范化，工作区另有路径越界检查。
 - 编排层依据持久化记录和文件存在情况复用资源；`ImageStore` 会对被复用的图片重新检查数据。
+- 可选插图布局只派生本次 `book.json` 和 `illustration-layout.json`，不覆盖 `raw/`、`chapters/` 或升级 Manifest。映射绑定原始块坐标、章节摘要和图片文件摘要，每次重新校验；未启用布局时从源章节生成原排列。布局报告是最近一次启用布局的派生记录，不用于恢复或判断下载完成。
 
 Manifest schema、资源状态、缓存复用及目录语义均属于兼容性边界。变更它们时，评估旧工作区迁移和中断后的恢复行为，而不只是检查新版本单次运行是否成功。
 
@@ -105,6 +113,7 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 
 - [站点解析](../../src/site/parser.test.ts)、[认证解析](../../src/site/auth.test.ts)、[HTTP 客户端](../../src/http/client.test.ts)
 - [下载编排与恢复](../../src/service/downloader.test.ts)
+- [插图标记](../../src/site/illustrations.test.ts)、[映射校验](../../src/domain/illustration-layout.test.ts)、[离线检查](../../src/service/illustration-inspection.test.ts)、[布局与 EPUB 集成](../../src/service/illustration-download.test.ts)、[离线 CLI](../../src/cli/illustrations.test.ts)
 - [存储](../../src/storage/workspace.test.ts)、[路径](../../src/storage/paths.test.ts)
 - [完整性](../../src/domain/validate.test.ts)、[EPUB](../../src/epub/builder.test.ts)、[账号登录](../../src/auth/login.test.ts)、[会话持久化](../../src/auth/session.test.ts)、[浏览器验证](../../src/auth/browser.test.ts)
 

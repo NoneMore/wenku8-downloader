@@ -12,6 +12,8 @@ import { outputEpubPath } from '../storage/paths.js';
 import { BookWorkspace } from '../storage/workspace.js';
 import { parseBookDetails, parseCatalogue } from '../site/parser.js';
 import { isCopyrightUnavailable, Wenku8Client } from '../site/client.js';
+import { applyIllustrationLayout, type IllustrationMap } from '../domain/illustration-layout.js';
+import { prepareIllustrationLayout, type IllustrationLayoutReport } from './illustration-layout.js';
 
 export interface DownloadOptions {
   workDirectory?: string;
@@ -20,6 +22,8 @@ export interface DownloadOptions {
   chapterRetryRounds?: number;
   chapterRetryDelayMs?: number;
   allowMissingImages?: boolean;
+  relocateIllustrations?: boolean;
+  illustrationMap?: IllustrationMap;
   signal?: AbortSignal;
   onProgress?: (event: ProgressEvent) => void;
 }
@@ -38,6 +42,7 @@ export interface DownloadResult {
   book: Book;
   epubPath: string;
   workspaceDirectory: string;
+  illustrationLayout?: IllustrationLayoutReport;
 }
 
 interface ChapterTask {
@@ -172,7 +177,12 @@ export class Downloader {
       );
     }
 
-    const book: Book = { ...details, volumes, assets: [] };
+    let book: Book = { ...details, volumes, assets: [] };
+    const layout =
+      options.relocateIllustrations || options.illustrationMap
+        ? prepareIllustrationLayout(book, options.illustrationMap)
+        : undefined;
+    if (layout) book = layout.book;
     const imageStore = new ImageStore(this.client.http, workspace);
     const assets = new Map<string, Promise<Asset>>();
     if (book.coverSourceUrl) {
@@ -227,6 +237,15 @@ export class Downloader {
         }
       }
     }
+    if (layout) {
+      book = applyIllustrationLayout(book, layout.plan);
+      await workspace.writeJson('illustration-layout.json', layout.report);
+      emit({
+        phase: 'images',
+        kind: 'info',
+        message: `插图布局：恢复 ${layout.report.counts.recoveredUrls}，映射 ${layout.report.counts.appliedMappings}，未映射 ${layout.report.counts.unresolvedSymbols}，URL 碎片 ${layout.report.counts.legacyUrlFragments}`,
+      });
+    }
     await workspace.writeBook(book);
 
     emit({ phase: 'epub', message: '构建并校验 EPUB' });
@@ -254,7 +273,12 @@ export class Downloader {
         bytes: output.byteLength,
         sha256: sha256(output),
       });
-      return { book, epubPath, workspaceDirectory: workspace.directory };
+      return {
+        book,
+        epubPath,
+        workspaceDirectory: workspace.directory,
+        ...(layout ? { illustrationLayout: layout.report } : {}),
+      };
     } catch (error) {
       await workspace.mark(epubKey, {
         kind: 'epub',

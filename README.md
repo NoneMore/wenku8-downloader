@@ -90,6 +90,13 @@ wenku8 resume 1973
 wenku8 status 1973
 wenku8 status 1973 --json
 
+# 离线检查插图位置线索（无需登录）
+wenku8 illustrations 1973 --json
+
+# 恢复明确 URL 引用，或按核验过的本地映射移动插图
+wenku8 download 1973 --relocate-illustrations
+wenku8 download 1973 --illustration-map ./illustrations.json
+
 # 使用官方 EPUBCheck 校验
 wenku8 validate ~/Library/Application\ Support/wenku8/downloads/小说名.epub
 
@@ -180,6 +187,43 @@ epub/package/          EPUB 构建前的可检查目录
 正文中的每个图片引用必须对应一个已下载、可解码且登记在 EPUB manifest 中的本地文件。源站仅提供 `【图片】` 占位符却没有图片地址时，默认构建失败并报告具体卷章。
 
 `--allow-missing-images` 仅用于用户明确接受不完整产物的情况。
+
+### 插图位置与本地映射
+
+默认保持源章节的排列。`download --relocate-illustrations` 只恢复独立段落中的完整 `[IMG]URL[/IMG]` 或 `IMG]URL[/IMG]` 图片地址；编号标记不会自动匹配图库次序。旧下载包若已把 URL 标记拆散，保留现存块并报告恢复限制。
+
+`wenku8 illustrations <book> --json` 离线读取源缓存，输出标记、图片出现位置、章节摘要、可用图片文件摘要及本地相对路径。它不改写工作区，也不使用已经重排的 `book.json` 章节。退出码 `0` 表示检查完整，`2` 表示部分可检查，`1` 表示缺少可信的必要输入；检查完整不代表插图已全部定位。可用的符号标记包括 `（插图008）`、`第一章 插图001`、`插图001_fmt` 等固定格式；普通正文和未支持的标签保持原文。
+
+用户核对图片与自己的排版参考后，可将报告中的坐标和摘要填写为映射文件。下面的字段说明为占位值，实际摘要须使用检查报告中的 64 位 SHA-256：
+
+```json
+{
+  "version": 1,
+  "bookId": 1973,
+  "entries": [
+    {
+      "target": {
+        "chapterUrl": "https://example.test/body.htm",
+        "chapterSha256": "<目标章节摘要>",
+        "blockIndex": 3,
+        "marker": "（插图008）"
+      },
+      "image": {
+        "chapterUrl": "https://example.test/gallery.htm",
+        "chapterSha256": "<来源章节摘要>",
+        "blockIndex": 7,
+        "sourceUrl": "https://example.test/image.jpg",
+        "assetSha256": "<图片文件摘要>"
+      },
+      "evidence": { "reference": "用户核验所用的文件、出版物或页面" }
+    }
+  ]
+}
+```
+
+`blockIndex` 从零开始，`marker` 须与报告中的原标签逐字相同。`download --illustration-map <file>` 同时启用明确 URL 恢复；同卷内将选中的来源图片块移到目标，支持一图对应多个明确目标。未选中的图片不受影响。任何一条映射失效都终止本次生成，`--allow-missing-images` 不能跳过映射校验。程序记录核验来源，但不认证或访问 `evidence.reference`。
+
+启用布局时，工作区的 `illustration-layout.json` 记录本次恢复、映射及未解析情况。它是派生记录，后续生成仍从源缓存重新校验。重新运行不带新选项的 `download` 可生成原排列；源章节 JSON 和原始 HTML 保持不变。新选项只在 `download` 提供，需要继续同一布局时，重新执行相同的 `download` 命令即可复用缓存。
 
 ## 本地开发
 
