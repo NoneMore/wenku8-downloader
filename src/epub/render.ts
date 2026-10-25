@@ -24,6 +24,9 @@ export function renderCover(book: Book): string | undefined {
 }
 
 export function renderNavigation(book: Book, chapterFiles: Map<string, string>): string {
+  const cover = book.assets.some((asset) => asset.id === book.coverAssetId)
+    ? '<li><a href="cover.xhtml">封面</a></li>'
+    : '';
   const volumes = book.volumes
     .map((volume) => {
       const chapters = volume.chapters
@@ -36,7 +39,7 @@ export function renderNavigation(book: Book, chapterFiles: Map<string, string>):
     })
     .join('');
   return xmlDocument(`${XHTML_OPEN}
-<head><title>目录</title></head><body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>${volumes}</ol></nav></body>
+<head><title>目录</title></head><body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>${cover}${volumes}</ol></nav></body>
 </html>`);
 }
 
