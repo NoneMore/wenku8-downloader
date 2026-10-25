@@ -4,11 +4,13 @@ import path from 'node:path';
 import { input, password, select } from '@inquirer/prompts';
 import { Command } from 'commander';
 import { Listr } from 'listr2';
-import { Downloader } from './service/downloader.js';
+import { Downloader, type DownloadResult } from './service/downloader.js';
 import { Wenku8Client, type SugoiYear, type ToplistSort } from './site/client.js';
 import { parseBookReference } from './domain/ids.js';
 import { commandAvailable, runEpubCheck } from './cli/epubcheck.js';
 import { manifestSchema } from './storage/schema.js';
+import { parseIllustrationMap } from './domain/illustration-layout.js';
+import { inspectIllustrations, inspectionExitCode } from './service/illustration-inspection.js';
 import {
   userConfigDirectory,
   userDownloadsDirectory,
@@ -26,7 +28,6 @@ import {
   formatProgress,
   formatHttpRetry,
 } from './cli/ui.js';
-import type { Book } from './domain/book.js';
 import type { HttpRetryEvent } from './http/client.js';
 
 const VERSION = '5.1.0';
@@ -258,8 +259,31 @@ const addDownloadCommand = (name: 'download' | 'resume') =>
       await runDownload(reference, options);
     });
 
-addDownloadCommand('download');
+addDownloadCommand('download')
+  .option('--relocate-illustrations', '恢复完整图片 URL 标记并报告未定位插图')
+  .option('--illustration-map <file>', '按核验过的本地映射移动插图，同时恢复明确 URL');
 addDownloadCommand('resume');
+
+program
+  .command('illustrations')
+  .description('离线检查源缓存中的插图标记及可用图片')
+  .argument('<book>', '小说 ID 或详情页 URL')
+  .option('-w, --work-dir <directory>', '工作区目录', DEFAULT_WORK_DIRECTORY)
+  .option('--json', '输出版本化 JSON 检查报告')
+  .action(async (reference: string, options: { workDir: string; json?: boolean }) => {
+    const report = await inspectIllustrations(parseBookReference(reference), options.workDir);
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else {
+      console.log(
+        `插图检查：${report.status}；章节 ${report.counts.chaptersInspected}/${report.counts.chaptersExpected ?? '?'}，符号标记 ${report.counts.symbolMarkers}，URL 标记 ${report.counts.urlMarkers}，可用图片 ${report.counts.availableImages}/${report.counts.imageCandidates}，URL 碎片 ${report.counts.legacyUrlFragments}`,
+      );
+      for (const diagnostic of report.diagnostics)
+        console.log(
+          `${diagnostic.code}${diagnostic.chapterUrl ? ` ${diagnostic.chapterUrl}` : ''}${diagnostic.blockIndex === undefined ? '' : ` #${diagnostic.blockIndex}`}`,
+        );
+    }
+    process.exitCode = inspectionExitCode(report);
+  });
 
 program
   .command('status')
@@ -365,6 +389,8 @@ interface DownloadCliOptions {
   chapterRetryRounds: number;
   chapterRetryDelay: number;
   allowMissingImages?: boolean;
+  relocateIllustrations?: boolean;
+  illustrationMap?: string;
   httpStats?: boolean;
   verboseProgress?: boolean;
 }
@@ -511,6 +537,15 @@ async function runDownload(
   reference: string | number,
   options: Partial<DownloadCliOptions>,
 ): Promise<void> {
+  if (options.illustrationMap !== undefined && options.illustrationMap.trim() === '') {
+    throw new Error('--illustration-map 路径不能为空');
+  }
+  const illustrationMap =
+    options.illustrationMap === undefined
+      ? undefined
+      : parseIllustrationMap(
+          JSON.parse(await readFile(options.illustrationMap, 'utf8')) as unknown,
+        );
   const controller = new AbortController();
   process.once('SIGINT', () => controller.abort(new Error('用户取消')));
   const labels = new Map<string, string>();
@@ -551,6 +586,10 @@ async function runDownload(
                 ...(options.allowMissingImages !== undefined
                   ? { allowMissingImages: options.allowMissingImages }
                   : {}),
+                ...(options.relocateIllustrations !== undefined
+                  ? { relocateIllustrations: options.relocateIllustrations }
+                  : {}),
+                ...(illustrationMap ? { illustrationMap } : {}),
                 signal: controller.signal,
                 onProgress: (event) => {
                   if (event.sourceUrl) labels.set(event.sourceUrl, event.message);
@@ -582,18 +621,19 @@ async function runDownload(
         },
       },
     ).run();
-    if (context.result) printDownloadSummary(context.result);
+    if (context.result) {
+      printDownloadSummary(context.result);
+      const layout = context.result.illustrationLayout;
+      if (layout)
+        console.log(
+          `插图布局：恢复 ${layout.counts.recoveredUrls}，映射 ${layout.counts.appliedMappings}，未映射 ${layout.counts.unresolvedSymbols}，URL 碎片 ${layout.counts.legacyUrlFragments}；详情见工作区 illustration-layout.json`,
+        );
+    }
   } finally {
     writeImportantLog = undefined;
     if (options.httpStats) printHttpStats(client);
   }
 }
-
-type DownloadResult = {
-  book: Book;
-  epubPath: string;
-  workspaceDirectory: string;
-};
 
 function isBackInput(value: string): boolean {
   const normalized = value.trim().toLowerCase();
