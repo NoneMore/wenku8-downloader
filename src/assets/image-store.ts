@@ -2,8 +2,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import type { Asset } from '../domain/book.js';
+import { CloudflareChallengeError } from '../domain/errors.js';
 import { sha256, stableId } from '../domain/ids.js';
 import type { HttpClient } from '../http/client.js';
+import { isChallengePage } from '../site/auth.js';
 import type { BookWorkspace } from '../storage/workspace.js';
 
 export class ImageStore {
@@ -28,7 +30,14 @@ export class ImageStore {
     });
 
     try {
-      const { data } = await this.http.bytes(sourceUrl, signal);
+      const { data, response } = await this.http.bytes(sourceUrl, signal);
+      const mediaType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+      if (
+        (mediaType === 'text/html' || mediaType === 'application/xhtml+xml') &&
+        isChallengePage(new TextDecoder('gb18030').decode(data))
+      ) {
+        throw new CloudflareChallengeError(sourceUrl);
+      }
       const normalized = await normalizeImage(data);
       const relativePath = `assets/${role === 'cover' ? 'cover' : 'images'}/${id}.${normalized.extension}`;
       await this.workspace.writeAtomic(relativePath, normalized.data);

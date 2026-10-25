@@ -17,6 +17,70 @@ import { manifestSchema } from '../storage/schema.js';
 import { Downloader, type ProgressEvent } from './downloader.js';
 
 describe('Downloader', () => {
+  for (const preferCurl of [false, true]) {
+    for (const challenge of [true, false]) {
+      it(`handles HTTP 200 HTML image responses (${preferCurl ? 'curl' : 'Node'}, ${challenge ? 'challenge' : 'ordinary HTML'})`, async () => {
+        let requests = 0;
+        const server = createServer((_request, response) => {
+          requests += 1;
+          response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          response.end(
+            challenge
+              ? '<html><script src="/cdn-cgi/challenge-platform/test.js"></script></html>'
+              : '<html><p>验证码 cf-turnstile /cdn-cgi/challenge-platform/</p></html>',
+          );
+        });
+        servers.push(server);
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('Test server did not bind');
+        const imageUrl = `http://127.0.0.1:${address.port}/cover.jpg`;
+        const client = new Wenku8Client({ preferCurl, allowCurlFallback: false, retries: 2 });
+        const raw =
+          '<div id="content"><span><b>图片响应测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
+        const book = parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm');
+        book.coverSourceUrl = imageUrl;
+        vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
+        const catalogue =
+          '<table><tr><td>第一卷</td></tr><tr><td><a href="1.htm">第一章</a></td></tr></table>';
+        vi.spyOn(client, 'getCatalogue').mockResolvedValue({
+          raw: catalogue,
+          volumes: parseCatalogue(catalogue, book.catalogueUrl),
+        });
+        vi.spyOn(client, 'getChapter').mockImplementation((chapter) =>
+          Promise.resolve({
+            raw: '<div id="content">正文</div>',
+            chapter: { ...chapter, blocks: [{ type: 'paragraph', text: '正文' }] },
+          }),
+        );
+        const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-image-html-'));
+        const builder = new EpubBuilder();
+        const build = vi.spyOn(builder, 'build');
+        const result = new Downloader(client, builder).download(42, {
+          workDirectory: root,
+          outputDirectory: root,
+          allowMissingImages: true,
+        });
+        if (challenge) {
+          await expect(result).rejects.toBeInstanceOf(CloudflareChallengeError);
+          expect(build).not.toHaveBeenCalled();
+        } else {
+          const output = await result;
+          expect((await readFile(output.epubPath)).byteLength).toBeGreaterThan(0);
+          expect(build).toHaveBeenCalledOnce();
+        }
+        expect(requests).toBe(1);
+        const state = manifestSchema.parse(
+          JSON.parse(await readFile(path.join(root, '42', 'manifest.json'), 'utf8')),
+        );
+        expect(
+          Object.values(state.resources).find((resource) => resource.kind === 'cover')?.state,
+        ).toBe('failed');
+        expect(state.resources.epub?.state).toBe(challenge ? undefined : 'complete');
+      });
+    }
+  }
+
   it('propagates a definite image authentication block even when missing images are allowed', async () => {
     const client = new Wenku8Client();
     const raw =
