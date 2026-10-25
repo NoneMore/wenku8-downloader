@@ -94,6 +94,7 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 - `EpubBuilder` 的 `allowMissingImages` 选项会放宽其完整性验证；CLI 的 `--allow-missing-images` 对应此行为。修改相关语义时应特别检查对产物完整性的影响。
 - [`src/assets/image-store.ts`](../../src/assets/image-store.ts) 通过 sharp 校验图片并对非 JPEG/PNG/GIF 图片进行规范化。
 - [`src/epub/builder.ts`](../../src/epub/builder.ts) 创建 EPUB 文件树、清单、导航与打包输出，验证图片路径，并保证 ZIP 内首个 `mimetype` 条目不压缩。
+- 每卷生成独立 XHTML 扉页（包括默认“正文”卷及空卷），导航以“卷 → 章”嵌套并将卷名链接到扉页；正文按输入顺序依次排列卷扉页和该卷章节，空卷不生成章节子列表。此行为兼容现有书稿与 Manifest v1，已生成 EPUB 需重新构建才会包含卷扉页。
 - [`src/cli/epubcheck.ts`](../../src/cli/epubcheck.ts) 调用系统安装的 EPUBCheck；CI 的独立 Job 在测试环境安装并使用 EPUBCheck。
 
 ## 测试、构建与变更影响
