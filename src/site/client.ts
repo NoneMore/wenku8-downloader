@@ -10,8 +10,13 @@ import {
   parseSugoiResults,
 } from './parser.js';
 import { HttpClient, type HttpClientOptions } from '../http/client.js';
-import { AuthenticationRequiredError, CopyrightUnavailableError } from '../domain/errors.js';
-import { isLoginRequired } from './auth.js';
+import {
+  AuthenticationRequiredError,
+  CloudflareChallengeError,
+  CopyrightUnavailableError,
+  isAuthenticationError,
+} from '../domain/errors.js';
+import { isChallengePage, isLoginRequired } from './auth.js';
 
 const BASE_URL = 'https://www.wenku8.net';
 
@@ -101,6 +106,7 @@ export class Wenku8Client {
 
   private async siteText(url: string, encoding = 'gb18030', signal?: AbortSignal): Promise<string> {
     const html = await this.http.text(url, encoding, signal);
+    if (isChallengePage(html)) throw new CloudflareChallengeError(url);
     if (isLoginRequired(html)) throw new AuthenticationRequiredError();
     return html;
   }
@@ -120,6 +126,7 @@ export class Wenku8Client {
       try {
         return parsePackedChapter(await this.siteText(url, encoding, signal), chapter);
       } catch (error) {
+        if (isAuthenticationError(error)) throw error;
         lastError = error;
       }
     }

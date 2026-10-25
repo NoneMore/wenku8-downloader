@@ -14,12 +14,18 @@ export interface HttpClientOptions {
   minDelayMs?: number;
   requestsPerSecond?: number;
   preferCurl?: boolean;
+  allowCurlFallback?: boolean;
   rateLimitCooldownMs?: number;
   cookie?: string;
   cookieJar?: CookieJar;
   userAgent?: string;
-  onCookiesChanged?: () => Promise<void>;
+  onCookiesChanged?: (changes: readonly CookieUpdate[]) => Promise<void>;
   onRetry?: (event: HttpRetryEvent) => void;
+}
+
+export interface CookieUpdate {
+  url: string;
+  cookie: string;
 }
 
 export interface HttpClientStats {
@@ -53,7 +59,10 @@ export class HttpClient {
   private readonly headers: HeadersInit;
   private readonly cookie: string | undefined;
   private cookieSeeded = false;
-  private readonly onCookiesChanged: (() => Promise<void>) | undefined;
+  private readonly onCookiesChanged:
+    | ((changes: readonly CookieUpdate[]) => Promise<void>)
+    | undefined;
+  private readonly allowCurlFallback: boolean;
   private readonly userAgent: string;
   private readonly rateLimitCooldownMs: number;
   private readonly onRetry: ((event: HttpRetryEvent) => void) | undefined;
@@ -86,6 +95,7 @@ export class HttpClient {
     this.onRetry = options.onRetry;
     this.cookieJar = options.cookieJar ?? new CookieJar();
     this.onCookiesChanged = options.onCookiesChanged;
+    this.allowCurlFallback = options.allowCurlFallback ?? true;
     this.cookie = options.cookie?.trim();
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.useCurlTransport = options.preferCurl ?? false;
@@ -132,6 +142,7 @@ export class HttpClient {
         } catch (error) {
           if (
             !init.method &&
+            this.allowCurlFallback &&
             !this.useCurlTransport &&
             (this.cookie || this.cookieJar.serializeSync()?.cookies?.length) &&
             error instanceof CloudflareChallengeError
@@ -150,8 +161,9 @@ export class HttpClient {
         maxTimeout: 10_000,
         factor: 2,
         randomize: true,
+        shouldRetry: ({ error }) => !(error instanceof CloudflareChallengeError),
         onFailedAttempt: ({ error, attemptNumber, retriesLeft, retriesConsumed }) => {
-          if (retriesLeft > 0) {
+          if (retriesLeft > 0 && !(error instanceof CloudflareChallengeError)) {
             this.requestStats.automaticRetries += 1;
             this.onRetry?.({
               url,
@@ -187,11 +199,20 @@ export class HttpClient {
           ? this.curlBytes(url, headers, current, signal)
           : this.fetchBytes(url, headers, current, signal);
       });
-      let changed = false;
+      const changes: CookieUpdate[] = [];
       for (const value of output.response.headers.getSetCookie()) {
-        if (await this.cookieJar.setCookie(value, url, { ignoreError: true })) changed = true;
+        if (await this.cookieJar.setCookie(value, url, { ignoreError: true }))
+          changes.push({ url, cookie: value });
       }
-      if (changed) await this.onCookiesChanged?.();
+      if (changes.length && this.onCookiesChanged) {
+        try {
+          await this.onCookiesChanged(changes);
+        } catch (error) {
+          throw new AbortError(
+            error instanceof Error ? error : new Error('无法保存更新后的登录态'),
+          );
+        }
+      }
       const status = output.response.status;
       this.recordStatus(status);
       if ([301, 302, 303, 307, 308].includes(status)) {
@@ -200,20 +221,28 @@ export class HttpClient {
         const target = new URL(location, url);
         if (!['https:', 'http:'].includes(target.protocol)) throw new AbortError('不支持的重定向');
         if (
+          new URL(url).protocol === 'https:' &&
+          target.protocol === 'http:' &&
+          (init.method || (await this.cookieJar.getCookieString(target.href)))
+        )
+          throw new AbortError('拒绝 HTTPS 到 HTTP 的降级重定向');
+        if (
           init.method &&
           (target.origin !== new URL(initialUrl).origin || target.protocol !== 'https:')
         ) {
           throw new AbortError('登录重定向目标不受信任，已停止发送认证信息');
         }
+        if (current.method && (status === 307 || status === 308))
+          throw new AbortError('登录重定向要求重新提交凭证，已停止自动提交');
         if (status === 303 || ((status === 301 || status === 302) && current.method)) current = {};
         url = target.href;
         continue;
       }
+      if (output.response.headers.get('cf-mitigated') === 'challenge') {
+        this.requestStats.cloudflareChallenges += 1;
+        throw new CloudflareChallengeError(url);
+      }
       if (!isSuccessfulStatus(status)) {
-        if (output.response.headers.get('cf-mitigated') === 'challenge') {
-          this.requestStats.cloudflareChallenges += 1;
-          throw new CloudflareChallengeError(url);
-        }
         if (status === 429) {
           this.requestStats.http429Responses += 1;
           this.applyRateLimitCooldown(

@@ -5,6 +5,7 @@ import { CookieJar } from 'tough-cookie';
 import { z } from 'zod';
 import lockfile from 'proper-lockfile';
 import { userConfigDirectory, type UserDirectoryOptions } from '../cli/paths.js';
+import type { CookieUpdate } from '../http/client.js';
 
 export interface AccountSession {
   id: string;
@@ -58,10 +59,15 @@ export class SessionStore {
     return this.enqueue(async () => this.write(session));
   }
 
-  async update(session: AccountSession): Promise<void> {
+  async update(session: AccountSession, changes: readonly CookieUpdate[]): Promise<void> {
     return this.enqueue(async () => {
       // A request finishing after logout or another login must not restore its old session.
-      if ((await this.load())?.id === session.id) await this.write(session);
+      const current = await this.load();
+      if (current?.id !== session.id) return;
+      for (const change of changes) {
+        await current.cookieJar.setCookie(change.cookie, change.url, { ignoreError: true });
+      }
+      if (changes.length) await this.write(current);
     });
   }
 

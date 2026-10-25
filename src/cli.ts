@@ -382,7 +382,7 @@ async function createClient(
     preferCurl: session.transport === 'curl',
     cookieJar: session.cookieJar,
     userAgent: session.userAgent,
-    onCookiesChanged: () => store.update(session),
+    onCookiesChanged: (changes) => store.update(session, changes),
     ...(hooks.onRetry ? { onRetry: hooks.onRetry } : {}),
   });
 }

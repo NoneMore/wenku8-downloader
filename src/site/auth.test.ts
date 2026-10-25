@@ -17,6 +17,14 @@ const loginHtml = `<form method="post" action="${LOGIN_URL}?do=submit">
 const accountHtml = '<a href="/logout.php">退出登录</a><a href="/userdetail.php">个人信息</a>';
 
 describe('site authentication', () => {
+  it('selects a valid login form after password recovery or account-settings forms', () => {
+    const page =
+      '<form action="/recover.php"><input name="password" type="password"></form><form method="post" action="/useredit.php"><input name="username"><input name="password" type="password"></form>' +
+      loginHtml;
+    const selected = parseLoginForm(page)!;
+    expect(selected.formIndex).toBe(2);
+    expect(selected.url).toBe(`${LOGIN_URL}?do=submit`);
+  });
   it('retains the form state and encodes Chinese credentials as GBK', () => {
     const form = parseLoginForm(loginHtml)!;
     expect(form.url).toBe(`${LOGIN_URL}?do=submit`);

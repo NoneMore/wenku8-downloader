@@ -10,6 +10,28 @@ const credentials = { username: 'test', password: 'synthetic-test-password' };
 afterEach(() => vi.restoreAllMocks());
 
 describe('account login', () => {
+  it('starts with Node so direct account login does not require curl', async () => {
+    vi.spyOn(HttpClient.prototype, 'text').mockImplementation(function (this: HttpClient, url) {
+      expect(this.getTransport()).toBe('node');
+      return Promise.resolve(url === LOGIN_URL ? form : '<a href="/logout.php">退出</a>');
+    });
+    const post = vi.spyOn(HttpClient.prototype, 'postForm').mockResolvedValue('登录成功');
+    expect((await loginAccount(credentials)).transport).toBe('node');
+    expect(post).toHaveBeenCalledOnce();
+  });
+
+  it('hands an HTTP-200 account verification page to the browser without repeating the POST', async () => {
+    vi.spyOn(HttpClient.prototype, 'text').mockImplementation((url) =>
+      Promise.resolve(url === LOGIN_URL ? form : '<script>window._cf_chl_opt = {};</script>'),
+    );
+    const post = vi.spyOn(HttpClient.prototype, 'postForm').mockResolvedValue('登录成功');
+    const open = vi
+      .spyOn(browserLogin, 'loginInBrowser')
+      .mockRejectedValue(new Error('browser required'));
+    await expect(loginAccount(credentials)).rejects.toThrow('browser required');
+    expect(post).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledOnce();
+  });
   it('verifies authenticated access using the actual request client before returning a session', async () => {
     const text = vi
       .spyOn(HttpClient.prototype, 'text')

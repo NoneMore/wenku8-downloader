@@ -3,17 +3,105 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Wenku8Client } from '../site/client.js';
 import { parseBookDetails, parseCatalogue, type BookDetails } from '../site/parser.js';
 import type { Chapter, Volume } from '../domain/book.js';
-import { CopyrightUnavailableError } from '../domain/errors.js';
+import {
+  AuthenticationRequiredError,
+  CloudflareChallengeError,
+  CopyrightUnavailableError,
+} from '../domain/errors.js';
+import { EpubBuilder } from '../epub/builder.js';
 import { manifestSchema } from '../storage/schema.js';
 import { Downloader, type ProgressEvent } from './downloader.js';
 
 describe('Downloader', () => {
+  it('propagates a definite image authentication block even when missing images are allowed', async () => {
+    const client = new Wenku8Client();
+    const raw =
+      '<div id="content"><span><b>封面认证测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
+    const book = parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm');
+    book.coverSourceUrl = 'https://www.wenku8.net/cover.jpg';
+    vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
+    vi.spyOn(client, 'getCatalogue').mockResolvedValue({ raw: '<table></table>', volumes: [] });
+    const blocked = new CloudflareChallengeError(book.coverSourceUrl);
+    vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
+    const builder = new EpubBuilder();
+    const build = vi.spyOn(builder, 'build');
+    const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-image-auth-'));
+    await expect(
+      new Downloader(client, builder).download(42, {
+        workDirectory: root,
+        outputDirectory: root,
+        allowMissingImages: true,
+      }),
+    ).rejects.toBe(blocked);
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  for (const blocked of [
+    new AuthenticationRequiredError(),
+    new CloudflareChallengeError('https://www.wenku8.net/novel/42/2.htm'),
+  ]) {
+    it('stops on authentication failure and reuses completed chapters after a fresh login', async () => {
+      const client = new Wenku8Client();
+      const catalogueUrl = 'https://www.wenku8.net/novel/42/index.htm';
+      const raw =
+        '<div id="content"><span><b>认证恢复测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
+      vi.spyOn(client, 'getBookDetails').mockResolvedValue({
+        raw,
+        book: parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm'),
+      });
+      const catalogue =
+        '<table><tr><td colspan="4">第一卷</td></tr><tr><td><a href="1.htm">第一章</a></td><td><a href="2.htm">第二章</a></td><td><a href="3.htm">第三章</a></td></tr></table>';
+      vi.spyOn(client, 'getCatalogue').mockResolvedValue({
+        raw: catalogue,
+        volumes: parseCatalogue(catalogue, catalogueUrl),
+      });
+      let signedIn = false;
+      const chapter = vi.spyOn(client, 'getChapter').mockImplementation((item) => {
+        if (!signedIn && item.title === '第二章') return Promise.reject(blocked);
+        return Promise.resolve({
+          raw: '<div id="content">正文</div>',
+          chapter: { ...item, blocks: [{ type: 'paragraph', text: '正文' }] },
+        });
+      });
+      const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-auth-resume-'));
+      const builder = new EpubBuilder();
+      const build = vi.spyOn(builder, 'build');
+      const downloader = new Downloader(client, builder);
+      await expect(
+        downloader.download(42, {
+          workDirectory: root,
+          outputDirectory: root,
+          chapterConcurrency: 1,
+        }),
+      ).rejects.toBe(blocked);
+      expect(chapter.mock.calls.map(([item]) => item.title)).toEqual(['第一章', '第二章']);
+      expect(build).not.toHaveBeenCalled();
+      const state = manifestSchema.parse(
+        JSON.parse(await readFile(path.join(root, '42', 'manifest.json'), 'utf8')),
+      );
+      expect(
+        Object.values(state.resources).filter(
+          (resource) => resource.kind === 'chapter' && resource.state === 'complete',
+        ),
+      ).toHaveLength(1);
+      signedIn = true;
+      chapter.mockClear();
+      await downloader.download(42, {
+        workDirectory: root,
+        outputDirectory: root,
+        chapterConcurrency: 1,
+      });
+      expect(chapter.mock.calls.map(([item]) => item.title)).toEqual(['第二章', '第三章']);
+      expect(build).toHaveBeenCalledOnce();
+    });
+  }
   const servers: ReturnType<typeof createServer>[] = [];
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(
       servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     );

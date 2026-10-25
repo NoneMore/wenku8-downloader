@@ -26,7 +26,7 @@ import {
 import type { AccountSession } from './session.js';
 
 interface BrowserLoginOptions extends LoginOptions {
-  createContext?: () => Promise<BrowserContext>;
+  createContext?: (signal: AbortSignal) => Promise<BrowserContext>;
 }
 
 class BrowserLoginError extends Error {}
@@ -40,15 +40,18 @@ export async function loginInBrowser(
     AbortSignal.timeout(LOGIN_TIMEOUT_MS),
     ...(options.signal ? [options.signal] : []),
   ]);
-  const context = await (options.createContext ?? openLoginContext)();
-  const browser = context.browser();
+  let context: BrowserContext | undefined;
+  let browser: Browser | null | undefined;
   const abort = () => {
-    void context.close().catch(() => undefined);
+    void context?.close().catch(() => undefined);
   };
   signal.addEventListener('abort', abort, { once: true });
   let submitted = false;
   let phase = '初始化浏览器';
   try {
+    signal.throwIfAborted();
+    context = await (options.createContext ?? openLoginContext)(signal);
+    browser = context.browser();
     signal.throwIfAborted();
     context.setDefaultTimeout(5_000);
     // Never submit a top-level login form to another host or an insecure URL.
@@ -111,11 +114,18 @@ export async function loginInBrowser(
       if (failure) throw new BrowserLoginError(failure);
       if (isAuthenticatedPage(html)) {
         const userAgent = await page.evaluate(() => navigator.userAgent);
-        const cookieJar = browserCookiesToJar(await context.cookies());
+        const snapshot = browserCookiesToJar(await context.cookies());
         phase = '检查 CLI 会话交接';
         const failures: string[] = [];
         for (const preferCurl of [true, false]) {
-          const http = new HttpClient({ cookieJar, userAgent, preferCurl, retries: 0 });
+          const cookieJar = await snapshot.clone();
+          const http = new HttpClient({
+            cookieJar,
+            userAgent,
+            preferCurl,
+            allowCurlFallback: false,
+            retries: 0,
+          });
           try {
             await verifySession(http, signal);
             return { id: randomUUID(), userAgent, transport: http.getTransport(), cookieJar };
@@ -131,10 +141,7 @@ export async function loginInBrowser(
       const form = parseLoginForm(html);
       if (form && !submitted) {
         // Preserve native form submission so the browser applies the site's GBK encoding.
-        const element = page
-          .locator('form')
-          .filter({ has: page.locator('input[type="password"][name="password"]') })
-          .first();
+        const element = page.locator('form').nth(form.formIndex);
         phase = '填写账号';
         await element.locator('[name="username"]').fill(credentials.username);
         phase = '填写密码';
@@ -164,23 +171,26 @@ export async function loginInBrowser(
     throw new Error(`浏览器登录未完成（${phase}：${category}），请重新运行 \`wenku8 login\``);
   } finally {
     signal.removeEventListener('abort', abort);
-    await context.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
   }
 }
 
-async function openLoginContext(): Promise<BrowserContext> {
+async function openLoginContext(signal: AbortSignal): Promise<BrowserContext> {
   let browser: Browser | undefined;
   for (const channel of ['chrome', 'msedge', undefined]) {
+    signal.throwIfAborted();
     try {
       browser = await chromium.launch({
         headless: false,
         ...(channel ? { channel } : {}),
         timeout: 15_000,
       });
+      signal.throwIfAborted();
       return await browser.newContext({ acceptDownloads: false });
     } catch {
       await browser?.close().catch(() => undefined);
+      signal.throwIfAborted();
     }
   }
   throw new Error(

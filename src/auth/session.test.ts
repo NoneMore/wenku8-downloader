@@ -31,12 +31,33 @@ function session(): AccountSession {
 }
 
 describe('SessionStore', () => {
+  it('merges independent response changes without restoring stale cookies, including deletions', async () => {
+    const { store, file } = await setup();
+    await store.save(session());
+    const a = (await new SessionStore(file).load())!;
+    const b = (await new SessionStore(file).load())!;
+    const url = 'https://www.wenku8.net';
+    await new SessionStore(file).update(a, [
+      { url, cookie: 'test_session=rotated; Path=/; Secure; HttpOnly' },
+    ]);
+    await new SessionStore(file).update(b, [{ url, cookie: 'other=fresh; Path=/; Secure' }]);
+    expect((await store.load())!.cookieJar.getCookieStringSync(url)).toBe(
+      'test_session=rotated; other=fresh',
+    );
+    await new SessionStore(file).update(a, [
+      { url, cookie: 'other=deleted; Path=/; Secure; Max-Age=0' },
+    ]);
+    await new SessionStore(file).update(b, [{ url, cookie: 'third=value; Path=/; Secure' }]);
+    expect((await store.load())!.cookieJar.getCookieStringSync(url)).toBe(
+      'test_session=rotated; third=value',
+    );
+  });
   it('serializes independent stores so an in-flight refresh cannot undo logout', async () => {
     const { store, file } = await setup();
     const original = session();
     await store.save(original);
     const release = await lockfile.lock(file);
-    const update = new SessionStore(file).update(original);
+    const update = new SessionStore(file).update(original, []);
     const logout = new SessionStore(file).logout();
     await release();
     await Promise.all([update, logout]);
@@ -83,10 +104,10 @@ describe('SessionStore', () => {
     await store.save(old);
     const replacement = session();
     await store.save(replacement);
-    await store.update(old);
+    await store.update(old, []);
     expect((await store.load())?.id).toBe(replacement.id);
     await store.logout();
-    await store.update(replacement);
+    await store.update(replacement, []);
     expect(await store.load()).toBeUndefined();
   });
 

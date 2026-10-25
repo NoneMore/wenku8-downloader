@@ -6,6 +6,7 @@ export const LOGIN_URL = `${SITE_ORIGIN}/login.php`;
 export const ACCOUNT_URL = `${SITE_ORIGIN}/userdetail.php`;
 
 export interface LoginForm {
+  formIndex: number;
   url: string;
   fields: Array<[string, string]>;
   needsVerification: boolean;
@@ -13,20 +14,31 @@ export interface LoginForm {
 
 export function parseLoginForm(html: string): LoginForm | undefined {
   const $ = load(html);
-  const form = $('form')
-    .filter(
-      (_index, element) => $(element).find('input[type="password"][name="password"]').length > 0,
-    )
-    .first();
-  if (!form.length || !form.find('[name="username"]').length) return undefined;
-  const url = new URL(form.attr('action') || LOGIN_URL, LOGIN_URL);
-  if (
-    url.origin !== SITE_ORIGIN ||
-    url.pathname !== '/login.php' ||
-    form.attr('method')?.toLowerCase() !== 'post'
-  ) {
+  const forms = $('form').toArray();
+  const candidates = forms.filter(
+    (element) =>
+      $(element).find('[name="username"]').length &&
+      $(element).find('input[type="password"][name="password"]').length,
+  );
+  if (!candidates.length) return undefined;
+  const selected = candidates.find((element) => {
+    const form = $(element);
+    try {
+      const target = new URL(form.attr('action') || LOGIN_URL, LOGIN_URL);
+      return (
+        target.origin === SITE_ORIGIN &&
+        target.pathname === '/login.php' &&
+        form.attr('method')?.toLowerCase() === 'post'
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (!selected) {
     throw new Error('站点登录表单目标不受信任，已停止发送认证信息');
   }
+  const form = $(selected);
+  const url = new URL(form.attr('action') || LOGIN_URL, LOGIN_URL);
   const fields: Array<[string, string]> = [];
   form.find('input[type="hidden"]').each((_index, element) => {
     const name = $(element).attr('name');
@@ -40,6 +52,7 @@ export function parseLoginForm(html: string): LoginForm | undefined {
   const submit = form.find('input[type="submit"][name]').first();
   if (submit.length) fields.push([submit.attr('name')!, submit.attr('value') ?? '']);
   return {
+    formIndex: forms.indexOf(selected),
     url: url.href,
     fields,
     needsVerification:
@@ -149,5 +162,24 @@ export function loginFailure(html: string): string | undefined {
 }
 
 export function isVerificationPage(html: string): boolean {
-  return /cf-mitigated|challenge-platform|cf-turnstile|g-recaptcha|验证码|驗證碼/.test(html);
+  return (
+    isChallengePage(html) ||
+    /cf-mitigated|challenge-platform|cf-turnstile|g-recaptcha|验证码|驗證碼/.test(html)
+  );
+}
+
+export function isChallengePage(html: string): boolean {
+  const $ = load(html);
+  return (
+    $('#challenge-form, .cf-turnstile, iframe[src*="challenges.cloudflare.com"]').length > 0 ||
+    $('script')
+      .toArray()
+      .some((element) => {
+        const script = $(element);
+        return (
+          (script.attr('src') ?? '').includes('/cdn-cgi/challenge-platform/') ||
+          /(?:window\.)?_cf_chl_opt\s*=/.test(script.html() ?? '')
+        );
+      })
+  );
 }

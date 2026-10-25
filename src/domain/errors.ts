@@ -53,3 +53,7 @@ export class AuthenticationRequiredError extends Wenku8Error {
     super('登录态已失效或尚未登录，请运行 `wenku8 login` 后重试', 'AUTH_REQUIRED');
   }
 }
+
+export function isAuthenticationError(error: unknown): boolean {
+  return error instanceof AuthenticationRequiredError || error instanceof CloudflareChallengeError;
+}

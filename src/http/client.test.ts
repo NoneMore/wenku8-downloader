@@ -1,7 +1,16 @@
 import { createServer, type RequestListener } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { CookieJar } from 'tough-cookie';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HttpClient } from './client.js';
+import { HttpStatusError } from '../domain/errors.js';
+import { verificationFailure } from '../auth/login.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('HttpClient', () => {
   const servers: ReturnType<typeof createServer>[] = [];
@@ -74,6 +83,85 @@ describe('HttpClient', () => {
   });
 
   for (const preferCurl of [false, true]) {
+    it(`stops explicit challenges without retrying even with HTTP 200 (${preferCurl ? 'curl' : 'Node'})`, async () => {
+      let requests = 0;
+      const origin = await listen((_request, response) => {
+        requests += 1;
+        response.writeHead(200, { 'cf-mitigated': 'challenge' });
+        response.end('verification');
+      });
+      const client = new HttpClient({ preferCurl, allowCurlFallback: false, retries: 2 });
+      await expect(client.text(origin)).rejects.toThrow(/Cloudflare challenge/);
+      expect(requests).toBe(1);
+      expect(client.stats().automaticRetries).toBe(0);
+    });
+
+    it(`does not retry a completed response when saving cookies fails (${preferCurl ? 'curl' : 'Node'})`, async () => {
+      let requests = 0;
+      const origin = await listen((_request, response) => {
+        requests += 1;
+        response.writeHead(200, { 'set-cookie': 'session=synthetic; Path=/' });
+        response.end('ok');
+      });
+      const failure = new Error('session write failed');
+      const client = new HttpClient({
+        preferCurl,
+        retries: 2,
+        minDelayMs: 1,
+        onCookiesChanged: () => Promise.reject(failure),
+      });
+      await expect(client.text(origin)).rejects.toBe(failure);
+      expect(requests).toBe(1);
+      expect(client.stats().automaticRetries).toBe(0);
+    });
+
+    it(`blocks TLS downgrade and 307/308 credential replay (${preferCurl ? 'curl' : 'Node'})`, async () => {
+      let plaintextRequests = 0;
+      const plaintextCookies: Array<string | undefined> = [];
+      let posts = 0;
+      const plain = await listen((request, response) => {
+        plaintextRequests += 1;
+        plaintextCookies.push(request.headers.cookie);
+        response.end('unexpected');
+      });
+      const tls = createHttpsServer(
+        {
+          key: await readFile(new URL('./fixtures/localhost-test-key.pem', import.meta.url)),
+          cert: await readFile(new URL('./fixtures/localhost-test-cert.pem', import.meta.url)),
+        },
+        (request, response) => {
+          if (request.method === 'POST') posts += 1;
+          const status = request.url === '/308' ? 308 : 307;
+          response.writeHead(request.url === '/downgrade' ? 302 : status, {
+            location: request.url === '/downgrade' ? plain : '/credential-target',
+          });
+          response.end();
+        },
+      );
+      servers.push(tls);
+      await new Promise<void>((resolve) => tls.listen(0, '127.0.0.1', resolve));
+      const address = tls.address();
+      if (!address || typeof address === 'string') throw new Error('TLS test server did not bind');
+      const origin = `https://127.0.0.1:${address.port}`;
+      const clientModule = new URL('./client.ts', import.meta.url).href;
+      const program = `import {HttpClient} from ${JSON.stringify(clientModule)}; const client=new HttpClient({preferCurl:${preferCurl},cookie:'auth=synthetic',retries:0,requestsPerSecond:100}); const errors=[]; for (const path of ['/downgrade','/307','/308']) { try { if(path==='/downgrade') await client.text(${JSON.stringify(origin)}+path); else await client.postForm(${JSON.stringify(origin)}+path,'password=synthetic'); } catch(error) { errors.push(error.message); } } const publicClient=new HttpClient({preferCurl:${preferCurl},retries:0,requestsPerSecond:100}); if(await publicClient.text(${JSON.stringify(origin)}+'/downgrade')!=='unexpected') throw new Error('public redirect failed'); console.log(JSON.stringify(errors));`;
+      const certificate = fileURLToPath(
+        new URL('./fixtures/localhost-test-cert.pem', import.meta.url),
+      );
+      const result = await execFileAsync(
+        process.execPath,
+        ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e', program],
+        { env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate, CURL_CA_BUNDLE: certificate } },
+      );
+      expect(JSON.parse(result.stdout)).toEqual([
+        expect.stringContaining('降级'),
+        expect.stringContaining('重新提交凭证'),
+        expect.stringContaining('重新提交凭证'),
+      ]);
+      expect(plaintextRequests).toBe(1);
+      expect(plaintextCookies).toEqual([undefined]);
+      expect(posts).toBe(2);
+    }, 15_000);
     it(`keeps response cookies scoped across redirects and rotates them (${preferCurl ? 'curl' : 'Node'})`, async () => {
       const cookies: Array<string | undefined> = [];
       const jar = new CookieJar();
@@ -146,7 +234,9 @@ describe('HttpClient', () => {
       });
       await expect(client.postForm(`${origin}/post`, 'password=synthetic')).rejects.toThrow(/503/);
       expect(posts).toBe(1);
-      await expect(client.text(`${origin}/forbidden`)).rejects.toThrow(/403/);
+      const forbidden = await client.text(`${origin}/forbidden`).catch((error: unknown) => error);
+      expect(forbidden).toBeInstanceOf(HttpStatusError);
+      expect(verificationFailure(forbidden)).toBe('账号页面返回 HTTP 403');
       expect(client.stats().cloudflareChallenges).toBe(0);
     });
 

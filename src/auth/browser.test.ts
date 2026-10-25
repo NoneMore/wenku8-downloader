@@ -51,15 +51,53 @@ function form(extra = '') {
 }
 
 describe('browser authentication', () => {
+  it('does not start a browser for a pre-cancelled login', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const createContext = vi.fn<() => Promise<BrowserContext>>();
+    await expect(
+      loginInBrowser(credentials, new CookieJar(), { signal: controller.signal, createContext }),
+    ).rejects.toThrow('登录已取消');
+    expect(createContext).not.toHaveBeenCalled();
+  });
+
+  it('closes a context returned after cancellation during startup', async () => {
+    const { context } = await contextFor(form());
+    const controller = new AbortController();
+    let finishStartup!: (context: BrowserContext) => void;
+    const startup = new Promise<BrowserContext>((resolve) => {
+      finishStartup = resolve;
+    });
+    const result = loginInBrowser(credentials, new CookieJar(), {
+      signal: controller.signal,
+      createContext: () => startup,
+    });
+    const rejection = expect(result).rejects.toThrow('登录已取消');
+    controller.abort();
+    finishStartup(context);
+    await rejection;
+    expect(context.browser()?.isConnected()).toBe(false);
+  }, 20_000);
+
   it('retains the Node transport when curl cannot use the exported browser session', async () => {
     const { context } = await contextFor(form());
     vi.spyOn(HttpClient.prototype, 'text').mockImplementation(function (this: HttpClient) {
-      return Promise.resolve(this.getTransport() === 'curl' ? form() : accountHtml);
+      if (this.getTransport() === 'curl') {
+        this.cookieJar.setCookieSync('synthetic_session=invalid; Path=/; Secure', ACCOUNT_URL);
+        return Promise.resolve(form());
+      }
+      expect(this.cookieJar.getCookieStringSync(ACCOUNT_URL)).toContain(
+        'synthetic_session=browser-test',
+      );
+      this.cookieJar.setCookieSync('rotated=kept; Path=/; Secure', ACCOUNT_URL);
+      return Promise.resolve(accountHtml);
     });
     const session = await loginInBrowser(credentials, new CookieJar(), {
       createContext: () => Promise.resolve(context),
     });
     expect(session.transport).toBe('node');
+    expect(session.cookieJar.getCookieStringSync(ACCOUNT_URL)).toContain('rotated=kept');
+    expect(session.cookieJar.getCookieStringSync(ACCOUNT_URL)).not.toContain('invalid');
     expect(context.pages()).toHaveLength(0);
   }, 20_000);
 
@@ -87,7 +125,9 @@ describe('browser authentication', () => {
   }, 20_000);
 
   it('submits the real form in its encoding, exports scoped cookies, verifies the CLI and cleans up', async () => {
-    const { context, posts } = await contextFor(form());
+    const { context, posts } = await contextFor(
+      '<form action="/recover.php"><input name="password" type="password"></form>' + form(),
+    );
     const verify = vi.spyOn(HttpClient.prototype, 'text').mockImplementation(function (
       this: HttpClient,
       url,

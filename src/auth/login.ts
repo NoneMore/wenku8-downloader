@@ -32,7 +32,12 @@ export async function loginAccount(
 ): Promise<AccountSession> {
   if (!credentials.username.trim() || !credentials.password) throw new Error('账号和密码不能为空');
   const cookieJar = new CookieJar();
-  const http = new HttpClient({ cookieJar, preferCurl: true, retries: 0 });
+  const http = new HttpClient({
+    cookieJar,
+    preferCurl: false,
+    allowCurlFallback: false,
+    retries: 0,
+  });
   try {
     const html = await http.text(LOGIN_URL, 'gb18030', options.signal);
     const form = parseLoginForm(html);
@@ -67,12 +72,13 @@ export async function loginAccount(
 
 export async function verifySession(http: HttpClient, signal?: AbortSignal): Promise<void> {
   const html = await http.text(ACCOUNT_URL, 'gb18030', signal);
-  if (!isAuthenticatedPage(html))
-    throw new Error(
-      isLoginRequired(html)
-        ? '账号页面仍要求登录，请重新运行 `wenku8 login`'
-        : '无法确认账号登录状态：账号页面未提供已登录证据，请重新运行 `wenku8 login`',
-    );
+  if (isAuthenticatedPage(html)) return;
+  if (isVerificationPage(html)) throw new CloudflareChallengeError(ACCOUNT_URL);
+  throw new Error(
+    isLoginRequired(html)
+      ? '账号页面仍要求登录，请重新运行 `wenku8 login`'
+      : '无法确认账号登录状态：账号页面未提供已登录证据，请重新运行 `wenku8 login`',
+  );
 }
 
 export function verificationFailure(error: unknown): string {
