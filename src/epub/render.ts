@@ -32,8 +32,8 @@ export function renderCover(book: Book): string | undefined {
 
 export function renderNavigation(
   book: Book,
-  chapterFiles: Map<string, string>,
-  volumeFiles: Map<string, string>,
+  chapterFiles: Map<Chapter, string>,
+  volumeFiles: Map<Volume, string>,
 ): string {
   const cover = book.assets.some((asset) => asset.id === book.coverAssetId)
     ? '<li><a href="cover.xhtml">封面</a></li>'
@@ -43,10 +43,10 @@ export function renderNavigation(
       const chapters = volume.chapters
         .map(
           (chapter) =>
-            `<li><a href="${textHref(chapterFiles, chapter.id)}">${escapeXml(chapter.title)}</a></li>`,
+            `<li><a href="${textHref(chapterFiles, chapter)}">${escapeXml(chapter.title)}</a></li>`,
         )
         .join('');
-      return `<li><a href="${textHref(volumeFiles, volume.id)}">${escapeXml(volume.title)}</a>${chapters ? `<ol>${chapters}</ol>` : ''}</li>`;
+      return `<li><a href="${textHref(volumeFiles, volume)}">${escapeXml(volume.title)}</a>${chapters ? `<ol>${chapters}</ol>` : ''}</li>`;
     })
     .join('');
   return xmlDocument(`${XHTML_OPEN}
@@ -54,9 +54,9 @@ export function renderNavigation(
 </html>`);
 }
 
-function textHref(files: Map<string, string>, id: string): string {
-  const filename = files.get(id);
-  if (!filename) throw new Error(`EPUB 导航缺少文档：${id}`);
+function textHref<T extends { id: string }>(files: Map<T, string>, document: T): string {
+  const filename = files.get(document);
+  if (!filename) throw new Error(`EPUB 导航缺少文档：${document.id}`);
   return `text/${escapeXml(filename)}`;
 }
 

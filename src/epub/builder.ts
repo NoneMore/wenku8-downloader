@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promis
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import archiver from 'archiver';
-import type { Book } from '../domain/book.js';
+import type { Book, Chapter, Volume } from '../domain/book.js';
 import { validateBookCompleteness } from '../domain/validate.js';
 import { epubImageName } from '../assets/image-store.js';
 import { renderChapter, renderCover, renderNavigation, renderVolume } from './render.js';
@@ -49,14 +49,14 @@ export class EpubBuilder {
       mkdir(path.dirname(outputPath), { recursive: true }),
     ]);
 
-    const chapterFiles = new Map<string, string>();
-    const volumeFiles = new Map<string, string>();
+    const chapterFiles = new Map<Chapter, string>();
+    const volumeFiles = new Map<Volume, string>();
     const textDocuments: TextDocument[] = [];
     let chapterNumber = 0;
     for (const [volumeIndex, volume] of book.volumes.entries()) {
       const volumeNumber = String(volumeIndex + 1).padStart(4, '0');
       const volumeFilename = `volume-${volumeNumber}.xhtml`;
-      volumeFiles.set(volume.id, volumeFilename);
+      volumeFiles.set(volume, volumeFilename);
       textDocuments.push({ id: `volume-${volumeNumber}`, filename: volumeFilename });
       await writeFile(
         path.join(packageDirectory, 'EPUB', 'text', volumeFilename),
@@ -64,8 +64,8 @@ export class EpubBuilder {
       );
       for (const chapter of volume.chapters) {
         const filename = `${String(++chapterNumber).padStart(4, '0')}.xhtml`;
-        chapterFiles.set(chapter.id, filename);
-        textDocuments.push({ id: `chapter-${chapter.id}`, filename });
+        chapterFiles.set(chapter, filename);
+        textDocuments.push({ id: `chapter-${chapterNumber}`, filename });
         await writeFile(
           path.join(packageDirectory, 'EPUB', 'text', filename),
           renderChapter(book, chapter),

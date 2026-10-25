@@ -89,6 +89,12 @@ describe('EpubBuilder', () => {
     ]);
     const chapter = parseXml(files.get(spine[2]!)!);
     expect(chapter('p').text()).toBe('正文内容');
+    expect(
+      chapter('section')
+        .children()
+        .map((_index, element) => element.tagName)
+        .get(),
+    ).toEqual(['h1', 'p', 'figure']);
     const imagePath = path.posix.join(path.posix.dirname(spine[2]!), chapter('img').attr('src')!);
     expect(files.get(imagePath)).toEqual(image);
     expect(zip.readUInt32LE(0)).toBe(0x04034b50);
@@ -144,6 +150,39 @@ describe('EpubBuilder', () => {
       }
       expect(new Set(expectedSpine).size).toBe(6);
       expect(spine).toEqual(expectedSpine);
+    },
+  );
+
+  it(
+    'keeps distinct navigation targets and manifest IDs when source IDs repeat',
+    { timeout },
+    async () => {
+      const book = makeBook();
+      for (const [volumeIndex, volume] of book.volumes.entries()) {
+        volume.id = 'same-volume';
+        volume.title = `卷 ${volumeIndex}`;
+        for (const chapter of volume.chapters) chapter.id = 'same-chapter';
+      }
+      const { files } = await buildFixture(book);
+      const { spine } = inspectPackage(files);
+      const nav = parseXml(files.get('EPUB/nav.xhtml')!);
+      const targets = nav('nav a')
+        .map((_index, link) => `EPUB/${nav(link).attr('href')!}`)
+        .get();
+      expect(targets).toHaveLength(6);
+      expect(new Set(targets).size).toBe(6);
+      expect(targets).toEqual(spine);
+      for (const [volumeIndex, volume] of book.volumes.entries()) {
+        expect(parseXml(files.get(targets[volumeIndex * 3]!)!)('h1').text()).toBe(volume.title);
+        for (const [chapterIndex, chapter] of volume.chapters.entries()) {
+          const document = parseXml(files.get(targets[volumeIndex * 3 + chapterIndex + 1]!)!);
+          expect(
+            document('p')
+              .map((_index, element) => document(element).text())
+              .get(),
+          ).toEqual(chapter.blocks.map((block) => ('text' in block ? block.text : '')));
+        }
+      }
     },
   );
 
