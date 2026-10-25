@@ -10,14 +10,12 @@ import { parseBookReference } from './domain/ids.js';
 import { commandAvailable, runEpubCheck } from './cli/epubcheck.js';
 import { manifestSchema } from './storage/schema.js';
 import {
-  removeUserCookie,
-  resolveCookie,
-  saveUserCookie,
   userConfigDirectory,
-  userCookiePath,
   userDownloadsDirectory,
   userWorkspaceDirectory,
-} from './cli/cookie.js';
+} from './cli/paths.js';
+import { LOGIN_TIMEOUT_MS, loginAccount } from './auth/login.js';
+import { SessionStore, sessionPath } from './auth/session.js';
 import {
   printBookInfo,
   printDoctorStatus,
@@ -48,23 +46,55 @@ const program = new Command();
 
 program.name('wenku8').description('可恢复、图片完整性优先的轻小说 EPUB 下载器').version(VERSION);
 
+// Reject old credential flags before Commander can echo their secret values in diagnostics.
+if (process.argv.slice(2).some((arg) => /^--cookie(?:-file)?(?:=|$)/.test(arg))) {
+  console.error('不再支持手动 Cookie 参数，请运行 `wenku8 login` 使用账号登录。');
+  process.exit(1);
+}
+
 program
   .command('login')
-  .description('保存站点 Cookie 到用户配置目录')
-  .option('--cookie <value>', '直接传入站点 Cookie')
-  .option('--cookie-file <file>', '从文件读取 Cookie')
-  .action(async (options: CredentialCliOptions) => {
-    const cookie = await readLoginCookie(options);
-    const file = await saveUserCookie(cookie);
-    console.log(`Cookie 已保存：${file}`);
+  .description('使用站点账号登录，必要时自动打开浏览器完成验证')
+  .action(async () => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY)
+      throw new Error('账号登录需要交互终端，请在终端运行 `wenku8 login`');
+    const username = await input({
+      message: '站点账号（用户名或邮箱）',
+      validate: (value) => (value.trim() ? true : '账号不能为空'),
+    });
+    const secret = await password({
+      message: '密码',
+      mask: '*',
+      validate: (value) => (value ? true : '密码不能为空'),
+    });
+    const controller = new AbortController();
+    const cancel = () => controller.abort(new Error('登录已取消'));
+    process.once('SIGINT', cancel);
+    try {
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(LOGIN_TIMEOUT_MS)]);
+      const session = await loginAccount(
+        { username: username.trim(), password: secret },
+        {
+          signal,
+          onBrowserRequired: () =>
+            console.log(
+              '站点需要验证，正在打开登录浏览器。请完成验证与登录，完成后会自动保存登录态；最多等待 5 分钟。',
+            ),
+        },
+      );
+      await new SessionStore().save(session);
+      console.log('账号登录成功，登录态已保存。');
+    } finally {
+      process.removeListener('SIGINT', cancel);
+    }
   });
 
 program
   .command('logout')
-  .description('删除用户配置目录中的 Cookie')
+  .description('清除本工具保存的登录态')
   .action(async () => {
-    const file = await removeUserCookie();
-    console.log(`Cookie 已删除：${file}`);
+    await new SessionStore().logout();
+    console.log('已清除本工具保存的登录态。');
   });
 
 program
@@ -72,7 +102,7 @@ program
   .description('显示用户配置路径')
   .action(() => {
     console.log(`配置目录：${userConfigDirectory()}`);
-    console.log(`Cookie 文件：${userCookiePath()}`);
+    console.log(`登录态文件：${sessionPath()}`);
     console.log(`EPUB 输出目录：${DEFAULT_OUTPUT_DIRECTORY}`);
     console.log(`工作区目录：${DEFAULT_WORK_DIRECTORY}`);
   });
@@ -87,10 +117,18 @@ program
   .option('-w, --work-dir <directory>', '工作区目录', DEFAULT_WORK_DIRECTORY)
   .option('-c, --concurrency <number>', '网络并发数', parsePositiveInteger, 3)
   .option('-r, --rate-limit <number>', '每秒最多请求数', parsePositiveInteger, 1)
-  .option('--chapter-retry-rounds <number>', '章节失败后的整轮自动重试次数', parseNonNegativeInteger, 2)
-  .option('--chapter-retry-delay <ms>', '章节自动重试轮次之间的等待毫秒数', parseNonNegativeInteger, 15_000)
-  .option('--cookie <value>', '可选的站点 Cookie，也可使用 WENKU8_COOKIE')
-  .option('--cookie-file <file>', '本地 Cookie 文件，默认读取 .wenku8-cookie')
+  .option(
+    '--chapter-retry-rounds <number>',
+    '章节失败后的整轮自动重试次数',
+    parseNonNegativeInteger,
+    2,
+  )
+  .option(
+    '--chapter-retry-delay <ms>',
+    '章节自动重试轮次之间的等待毫秒数',
+    parseNonNegativeInteger,
+    15_000,
+  )
   .option('--allow-missing-images', '允许生成缺图 EPUB')
   .option('--http-stats', '打印 HTTP 传输统计')
   .option('--verbose-progress', '显示每个章节的详细进度日志')
@@ -120,10 +158,18 @@ program
   .option('-w, --work-dir <directory>', '工作区目录', DEFAULT_WORK_DIRECTORY)
   .option('-c, --concurrency <number>', '网络并发数', parsePositiveInteger, 3)
   .option('-r, --rate-limit <number>', '每秒最多请求数', parsePositiveInteger, 1)
-  .option('--chapter-retry-rounds <number>', '章节失败后的整轮自动重试次数', parseNonNegativeInteger, 2)
-  .option('--chapter-retry-delay <ms>', '章节自动重试轮次之间的等待毫秒数', parseNonNegativeInteger, 15_000)
-  .option('--cookie <value>', '可选的站点 Cookie，也可使用 WENKU8_COOKIE')
-  .option('--cookie-file <file>', '本地 Cookie 文件，默认读取 .wenku8-cookie')
+  .option(
+    '--chapter-retry-rounds <number>',
+    '章节失败后的整轮自动重试次数',
+    parseNonNegativeInteger,
+    2,
+  )
+  .option(
+    '--chapter-retry-delay <ms>',
+    '章节自动重试轮次之间的等待毫秒数',
+    parseNonNegativeInteger,
+    15_000,
+  )
   .option('--allow-missing-images', '允许生成缺图 EPUB')
   .option('--http-stats', '打印 HTTP 传输统计')
   .option('--verbose-progress', '显示每个章节的详细进度日志')
@@ -146,10 +192,18 @@ program
   .option('-w, --work-dir <directory>', '工作区目录', DEFAULT_WORK_DIRECTORY)
   .option('-c, --concurrency <number>', '网络并发数', parsePositiveInteger, 3)
   .option('-r, --rate-limit <number>', '每秒最多请求数', parsePositiveInteger, 1)
-  .option('--chapter-retry-rounds <number>', '章节失败后的整轮自动重试次数', parseNonNegativeInteger, 2)
-  .option('--chapter-retry-delay <ms>', '章节自动重试轮次之间的等待毫秒数', parseNonNegativeInteger, 15_000)
-  .option('--cookie <value>', '可选的站点 Cookie，也可使用 WENKU8_COOKIE')
-  .option('--cookie-file <file>', '本地 Cookie 文件，默认读取 .wenku8-cookie')
+  .option(
+    '--chapter-retry-rounds <number>',
+    '章节失败后的整轮自动重试次数',
+    parseNonNegativeInteger,
+    2,
+  )
+  .option(
+    '--chapter-retry-delay <ms>',
+    '章节自动重试轮次之间的等待毫秒数',
+    parseNonNegativeInteger,
+    15_000,
+  )
   .option('--allow-missing-images', '允许生成缺图 EPUB')
   .option('--http-stats', '打印 HTTP 传输统计')
   .option('--verbose-progress', '显示每个章节的详细进度日志')
@@ -166,11 +220,9 @@ program
   .command('info')
   .description('显示小说元数据')
   .argument('<book>', '小说 ID 或详情页 URL')
-  .option('--cookie <value>', '可选的站点 Cookie，也可使用 WENKU8_COOKIE')
-  .option('--cookie-file <file>', '本地 Cookie 文件，默认读取 .wenku8-cookie')
   .option('--json', '输出原始 JSON')
   .action(async (reference: string, options: InfoCliOptions) => {
-    const { book } = await (await createClient(options)).getBookDetails(parseBookReference(reference));
+    const { book } = await (await createClient()).getBookDetails(parseBookReference(reference));
     if (options.json) {
       console.log(JSON.stringify(book, null, 2));
       return;
@@ -187,10 +239,18 @@ const addDownloadCommand = (name: 'download' | 'resume') =>
     .option('-w, --work-dir <directory>', '工作区目录', DEFAULT_WORK_DIRECTORY)
     .option('-c, --concurrency <number>', '网络并发数', parsePositiveInteger, 3)
     .option('-r, --rate-limit <number>', '每秒最多请求数', parsePositiveInteger, 1)
-    .option('--chapter-retry-rounds <number>', '章节失败后的整轮自动重试次数', parseNonNegativeInteger, 2)
-    .option('--chapter-retry-delay <ms>', '章节自动重试轮次之间的等待毫秒数', parseNonNegativeInteger, 15_000)
-    .option('--cookie <value>', '可选的站点 Cookie，也可使用 WENKU8_COOKIE')
-    .option('--cookie-file <file>', '本地 Cookie 文件，默认读取 .wenku8-cookie')
+    .option(
+      '--chapter-retry-rounds <number>',
+      '章节失败后的整轮自动重试次数',
+      parseNonNegativeInteger,
+      2,
+    )
+    .option(
+      '--chapter-retry-delay <ms>',
+      '章节自动重试轮次之间的等待毫秒数',
+      parseNonNegativeInteger,
+      15_000,
+    )
     .option('--allow-missing-images', '允许生成缺图 EPUB')
     .option('--http-stats', '打印 HTTP 传输统计')
     .option('--verbose-progress', '显示每个章节的详细进度日志')
@@ -271,12 +331,7 @@ async function interactive(): Promise<void> {
   }
 }
 
-interface CredentialCliOptions {
-  cookie?: string;
-  cookieFile?: string;
-}
-
-interface SearchCliOptions extends CredentialCliOptions {
+interface SearchCliOptions {
   author?: boolean;
   download?: boolean;
   output: string;
@@ -298,11 +353,11 @@ interface SugoiCliOptions extends DownloadCliOptions {
   download?: boolean;
 }
 
-interface InfoCliOptions extends CredentialCliOptions {
+interface InfoCliOptions {
   json?: boolean;
 }
 
-interface DownloadCliOptions extends CredentialCliOptions {
+interface DownloadCliOptions {
   output: string;
   workDir: string;
   concurrency: number;
@@ -314,32 +369,20 @@ interface DownloadCliOptions extends CredentialCliOptions {
   verboseProgress?: boolean;
 }
 
-async function readLoginCookie(options: CredentialCliOptions): Promise<string> {
-  if (options.cookie?.trim()) return options.cookie.trim();
-  if (options.cookieFile?.trim()) return readFile(path.resolve(options.cookieFile), 'utf8');
-  return password({
-    message: '粘贴 www.wenku8.net 域名下的完整 Cookie',
-    mask: '*',
-  });
-}
-
 async function createClient(
   options: Partial<DownloadCliOptions> = {},
   hooks: { onRetry?: (event: HttpRetryEvent) => void } = {},
 ): Promise<Wenku8Client> {
-  const globalOptions = program.opts<CredentialCliOptions>();
-  const cookieOptions: CredentialCliOptions = {};
-  const cookie = options.cookie ?? globalOptions.cookie;
-  const cookieFile = options.cookieFile ?? globalOptions.cookieFile;
-  if (cookie !== undefined) cookieOptions.cookie = cookie;
-  if (cookieFile !== undefined) cookieOptions.cookieFile = cookieFile;
-  const resolvedCookie = await resolveCookie(cookieOptions);
-  if (!resolvedCookie) throw new Error(missingCookieMessage());
+  const store = new SessionStore();
+  const session = await store.load();
+  if (!session) throw new Error('尚未登录，请先运行 `wenku8 login` 使用站点账号登录。');
   return new Wenku8Client({
     concurrency: options.concurrency ?? 3,
     requestsPerSecond: options.rateLimit ?? 1,
-    preferCurl: true,
-    cookie: resolvedCookie,
+    preferCurl: session.transport === 'curl',
+    cookieJar: session.cookieJar,
+    userAgent: session.userAgent,
+    onCookiesChanged: () => store.update(session),
     ...(hooks.onRetry ? { onRetry: hooks.onRetry } : {}),
   });
 }
@@ -404,7 +447,9 @@ async function interactiveSugoi(): Promise<boolean> {
   return previewAndMaybeDownload(selected);
 }
 
-async function selectBookFromResults(results: Array<{ id: number; title: string; author?: string }>) {
+async function selectBookFromResults(
+  results: Array<{ id: number; title: string; author?: string }>,
+) {
   return select({
     message: '选择要下载的小说',
     loop: false,
@@ -435,7 +480,10 @@ async function previewAndMaybeDownload(reference: string | number): Promise<bool
   return true;
 }
 
-async function readWorkspaceStatus(reference: string, workDir: string): Promise<{
+async function readWorkspaceStatus(
+  reference: string,
+  workDir: string,
+): Promise<{
   bookId: number;
   title?: string;
   updatedAt: string;
@@ -459,14 +507,18 @@ async function readWorkspaceStatus(reference: string, workDir: string): Promise<
   };
 }
 
-async function runDownload(reference: string | number, options: Partial<DownloadCliOptions>): Promise<void> {
+async function runDownload(
+  reference: string | number,
+  options: Partial<DownloadCliOptions>,
+): Promise<void> {
   const controller = new AbortController();
   process.once('SIGINT', () => controller.abort(new Error('用户取消')));
   const labels = new Map<string, string>();
   let writeImportantLog: ((line: string) => void) | undefined;
   const client = await createClient(options, {
     onRetry: (event) => {
-      if (options.verboseProgress) writeImportantLog?.(formatHttpRetry(event, labels.get(event.url)));
+      if (options.verboseProgress)
+        writeImportantLog?.(formatHttpRetry(event, labels.get(event.url)));
     },
   });
   const context: { result?: DownloadResult } = {};
@@ -480,34 +532,43 @@ async function runDownload(reference: string | number, options: Partial<Download
             const importantLines: string[] = [];
             let currentProgress = '';
             const render = () => {
-              task.output = [...importantLines.slice(-4), currentProgress].filter(Boolean).join('\n');
+              task.output = [...importantLines.slice(-4), currentProgress]
+                .filter(Boolean)
+                .join('\n');
             };
             writeImportantLog = (line) => {
               importantLines.push(line);
               render();
             };
-            ctx.result = await new Downloader(client).download(parseBookReference(String(reference)), {
-              outputDirectory: options.output ?? DEFAULT_OUTPUT_DIRECTORY,
-              workDirectory: options.workDir ?? DEFAULT_WORK_DIRECTORY,
-              chapterConcurrency: options.concurrency ?? 3,
-              chapterRetryRounds: options.chapterRetryRounds ?? 2,
-              chapterRetryDelayMs: options.chapterRetryDelay ?? 15_000,
-              ...(options.allowMissingImages !== undefined
-                ? { allowMissingImages: options.allowMissingImages }
-                : {}),
-              signal: controller.signal,
-              onProgress: (event) => {
-                if (event.sourceUrl) labels.set(event.sourceUrl, event.message);
-                const line = formatProgress(event);
-                if (options.verboseProgress || event.kind === 'failed' || event.kind === 'retry') {
-                  currentProgress = '';
-                  writeImportantLog?.(line);
-                } else {
-                  currentProgress = line;
-                  render();
-                }
+            ctx.result = await new Downloader(client).download(
+              parseBookReference(String(reference)),
+              {
+                outputDirectory: options.output ?? DEFAULT_OUTPUT_DIRECTORY,
+                workDirectory: options.workDir ?? DEFAULT_WORK_DIRECTORY,
+                chapterConcurrency: options.concurrency ?? 3,
+                chapterRetryRounds: options.chapterRetryRounds ?? 2,
+                chapterRetryDelayMs: options.chapterRetryDelay ?? 15_000,
+                ...(options.allowMissingImages !== undefined
+                  ? { allowMissingImages: options.allowMissingImages }
+                  : {}),
+                signal: controller.signal,
+                onProgress: (event) => {
+                  if (event.sourceUrl) labels.set(event.sourceUrl, event.message);
+                  const line = formatProgress(event);
+                  if (
+                    options.verboseProgress ||
+                    event.kind === 'failed' ||
+                    event.kind === 'retry'
+                  ) {
+                    currentProgress = '';
+                    writeImportantLog?.(line);
+                  } else {
+                    currentProgress = line;
+                    render();
+                  }
+                },
               },
-            });
+            );
             currentProgress = `输出 ${ctx.result.epubPath}`;
             render();
           },
@@ -560,14 +621,6 @@ function parseSugoiYear(value: string): SugoiYear {
     throw new Error(`年份必须在 2026 到 2005 之间：${value}`);
   }
   return year as SugoiYear;
-}
-
-function missingCookieMessage(): string {
-  return [
-    '缺少 wenku8 登录 Cookie。',
-    '请先在浏览器登录 https://www.wenku8.net/ ，复制 www.wenku8.net 域名下的完整 Cookie，',
-    '然后运行 `wenku8 login` 保存；也可以临时使用 `--cookie`、`--cookie-file` 或 WENKU8_COOKIE。',
-  ].join('');
 }
 
 function parsePositiveInteger(value: string): number {

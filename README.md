@@ -41,7 +41,7 @@ wenku8 doctor
 ### 快速开始
 
 ```bash
-# 首次使用先保存登录态
+# 首次使用先登录账号
 wenku8 login
 
 # 进入交互模式
@@ -51,7 +51,9 @@ wenku8
 wenku8 download 1973
 ```
 
-`wenku8 login` 会要求粘贴 `www.wenku8.net` 域名下的完整 Cookie。保存后，搜索、查看详情、下载等命令会自动使用这个登录态。
+`wenku8 login` 会在终端提示输入站点账号（用户名或邮箱）和密码。需要验证码或 Cloudflare 验证时，会自动打开独立浏览器窗口；请在窗口内完成验证和登录，程序会自动接收登录态，检查 CLI 可以使用后保存。后续搜索、查看详情、下载等命令自动复用登录态，无需复制 Cookie。
+
+浏览器验证需要图形界面。程序优先使用已安装的 Chrome、Edge，也支持 Playwright Chromium；没有这些浏览器时，可执行 `npx playwright@1.64.1 install chromium` 安装。浏览器登录最多等待 5 分钟，期间可用 Ctrl+C 取消；请保留窗口直至终端报告完成。密码不会保存。
 
 ### 常用命令
 
@@ -94,9 +96,8 @@ wenku8 validate ~/Library/Application\ Support/wenku8/downloads/小说名.epub
 # 检查运行环境
 wenku8 doctor
 
-# 保存或清理登录态
+# 登录或清理登录态
 wenku8 login
-wenku8 login --cookie-file .wenku8-cookie
 wenku8 config
 wenku8 logout
 ```
@@ -110,8 +111,6 @@ wenku8 logout
 -r, --rate-limit <number>     每秒最多请求数，默认 1
 --chapter-retry-rounds <n>    章节失败后的整轮自动重试次数，默认 2
 --chapter-retry-delay <ms>    章节自动重试轮次之间的等待时间，默认 15000
---cookie <value>              可选站点 Cookie
---cookie-file <file>          本地 Cookie 文件，默认读取 .wenku8-cookie
 --allow-missing-images        明确允许生成缺图版本
 --http-stats                  打印 Node/curl、429 和自动重试统计
 --verbose-progress            显示每个章节的详细进度日志
@@ -131,37 +130,27 @@ new    新书一览       sort=postdate
 
 ## 登录态
 
-搜索、榜单、详情和下载等需要访问 wenku8 的命令都必须提供 Cookie。Cookie 读取优先级为：`--cookie` 参数 > `WENKU8_COOKIE` 环境变量 > `--cookie-file` 指定文件 > 当前目录 `.wenku8-cookie` > 用户配置目录 Cookie。没有任何 Cookie 时，CLI 会提前提示先执行 `wenku8 login`，不会继续发起请求。
-
-推荐做法是在浏览器登录后，复制 `www.wenku8.net` 域名下的完整 Cookie，然后执行：
+搜索、榜单、详情和下载等联网命令需要程序保存的账号登录态。首次使用、会话失效或升级自手动 Cookie 版本后，执行：
 
 ```bash
 wenku8 login
 ```
 
-它会把 Cookie 写入用户配置目录，npm 包更新、重新安装或全局安装都不会把 Cookie 打进包产物里：
+账号密码仅用于本次登录。验证可用的会话写入用户配置目录中的 `session.json`，保存已验证的 Node/curl 传输、浏览器 User-Agent 及 Cookie 的域、路径、有效期和安全属性。后续命令复用通过检查的传输。会话文件属于敏感凭证，不要分享或提交到仓库。npm 包更新、重新安装或全局安装不会将它打入包产物：
 
 ```text
-macOS   ~/Library/Application Support/wenku8/cookie
-Linux   ${XDG_CONFIG_HOME:-~/.config}/wenku8/cookie
-Windows %APPDATA%\wenku8\cookie
+macOS   ~/Library/Application Support/wenku8/session.json
+Linux   ${XDG_CONFIG_HOME:-~/.config}/wenku8/session.json
+Windows %APPDATA%\wenku8\session.json
 ```
 
-可以用 `wenku8 config` 查看当前机器实际路径，用 `wenku8 logout` 删除。`wenku8 config` 也会显示默认 EPUB 输出目录和工作区目录。文件内容兼容直接写原始 Cookie：
+可以用 `wenku8 config` 查看实际路径，用 `wenku8 logout` 清除本工具的登录态。退出登录不会删除 EPUB、下载工作区或日常浏览器资料，也不代表注销站点其他会话。登录浏览器使用临时独立会话，完成、取消或失败时关闭，不读取日常浏览器资料。
 
-```text
-PHPSESSID=...; jieqiUserInfo=...; jieqiVisitInfo=...
-```
+本次移除了 `--cookie`、`--cookie-file`、`WENKU8_COOKIE` 及 `.wenku8-cookie` 导入；旧用户配置目录的 `cookie` 文件也不再读取。已有文件不会自动删除，升级后需要重新运行一次账号登录。
 
-也可以使用 `.env` 风格：
+普通联网命令遇到会话失效或 Cloudflare 验证会明确报错，不在下载中自动打开浏览器。请重新运行 `wenku8 login`，成功后重试原命令或使用 `resume` 继续。浏览器内登录成功但 CLI 无法使用会话时，登录命令报告交接失败，并保留原有登录态；本工具不尝试绕过站点防护。
 
-```text
-WENKU8_COOKIE="PHPSESSID=...; jieqiUserInfo=...; jieqiVisitInfo=..."
-```
-
-如果只想给某个项目临时使用，也可以放在当前目录的 `.wenku8-cookie`。这个文件已被 `.gitignore` 忽略。
-
-如果站点返回 Cloudflare challenge，CLI 会明确报错。请先在浏览器中完成验证，然后复制当前 `wenku8.net` Cookie 后运行 `wenku8 login`，或使用 `--cookie` / `WENKU8_COOKIE` 传入；本工具不会尝试绕过站点防护。
+登录需要交互终端，遇到浏览器验证还需要图形环境；不提供密码参数、密码环境变量或无人值守自动重登。没有会话时不会发起下载请求。
 
 ## 数据与恢复
 
@@ -198,6 +187,7 @@ epub/package/          EPUB 构建前的可检查目录
 
 ```bash
 pnpm install
+pnpm exec playwright install chromium
 pnpm build
 pnpm link --global
 ```
@@ -214,6 +204,8 @@ pnpm check
 ```
 
 解析器使用离线 HTML fixture/样例测试；EPUB 测试会检查 ZIP 中第一个条目是未压缩的 `mimetype`。发布前建议安装 EPUBCheck 5.3 或更高版本并验证真实产物。
+
+认证测试使用模拟页面、局部 HTTP 服务和真实浏览器，不使用真实账号。浏览器集成测试默认启动 Playwright Chromium；也可通过 `WENKU8_TEST_BROWSER=chrome` 或 `WENKU8_TEST_BROWSER=msedge` 使用已安装的浏览器。Linux CI 安装命令为 `pnpm exec playwright install --with-deps chromium`。
 
 ## 架构
 
@@ -234,8 +226,10 @@ CLI -> Downloader -> Wenku8Client -> HttpClient
 
 ```bash
 docker build -t wenku8 .
-docker run --rm -it -v "$PWD/downloads:/books" wenku8 download 1973 -w /books -o /books
+docker run --rm -it -v "$PWD/downloads:/books" -v "<用户配置目录>:/root/.config/wenku8" wenku8 download 1973 -w /books -o /books
 ```
+
+先在有图形界面的宿主机执行 `wenku8 login`，再将 `wenku8 config` 显示的配置目录挂载进容器。镜像运行环境不提供图形登录窗口；如站点要求重新验证，需要回到宿主机登录。挂载目录包含登录凭证。
 
 ## 版权
 

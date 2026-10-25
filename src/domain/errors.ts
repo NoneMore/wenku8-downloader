@@ -42,8 +42,14 @@ export class HttpStatusError extends Wenku8Error {
 export class CloudflareChallengeError extends Wenku8Error {
   constructor(readonly url: string) {
     super(
-      `站点对 ${url} 返回了 Cloudflare challenge。请在浏览器中完成验证后，通过 --cookie 或 WENKU8_COOKIE 提供有效 Cookie。`,
+      `站点对 ${url} 返回了 Cloudflare challenge。请运行 \`wenku8 login\`，按提示在自动打开的浏览器中完成验证后重试。`,
       'CLOUDFLARE_CHALLENGE',
     );
+  }
+}
+
+export class AuthenticationRequiredError extends Wenku8Error {
+  constructor() {
+    super('登录态已失效或尚未登录，请运行 `wenku8 login` 后重试', 'AUTH_REQUIRED');
   }
 }

@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import PQueue from 'p-queue';
 import pRetry, { AbortError } from 'p-retry';
-import makeFetchCookie from 'fetch-cookie';
 import { CookieJar } from 'tough-cookie';
 import { CloudflareChallengeError, HttpStatusError } from '../domain/errors.js';
 
@@ -17,7 +16,9 @@ export interface HttpClientOptions {
   preferCurl?: boolean;
   rateLimitCooldownMs?: number;
   cookie?: string;
+  cookieJar?: CookieJar;
   userAgent?: string;
+  onCookiesChanged?: () => Promise<void>;
   onRetry?: (event: HttpRetryEvent) => void;
 }
 
@@ -45,12 +46,14 @@ export interface HttpRetryEvent {
 
 export class HttpClient {
   private readonly queue: PQueue;
-  private readonly fetchWithCookies: typeof fetch;
+  readonly cookieJar: CookieJar;
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly minDelayMs: number;
   private readonly headers: HeadersInit;
   private readonly cookie: string | undefined;
+  private cookieSeeded = false;
+  private readonly onCookiesChanged: (() => Promise<void>) | undefined;
   private readonly userAgent: string;
   private readonly rateLimitCooldownMs: number;
   private readonly onRetry: ((event: HttpRetryEvent) => void) | undefined;
@@ -81,8 +84,8 @@ export class HttpClient {
     this.minDelayMs = options.minDelayMs ?? 800;
     this.rateLimitCooldownMs = options.rateLimitCooldownMs ?? 15_000;
     this.onRetry = options.onRetry;
-    const jar = new CookieJar();
-    this.fetchWithCookies = makeFetchCookie(fetch, jar);
+    this.cookieJar = options.cookieJar ?? new CookieJar();
+    this.onCookiesChanged = options.onCookiesChanged;
     this.cookie = options.cookie?.trim();
     this.userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
     this.useCurlTransport = options.preferCurl ?? false;
@@ -94,7 +97,6 @@ export class HttpClient {
       pragma: 'no-cache',
       'upgrade-insecure-requests': '1',
       'user-agent': this.userAgent,
-      ...(this.cookie ? { cookie: this.cookie } : {}),
     };
   }
 
@@ -102,106 +104,170 @@ export class HttpClient {
     url: string,
     signal?: AbortSignal,
   ): Promise<{ data: Uint8Array; response: Response }> {
-    return this.queue.add(async () =>
-      pRetry(
-        async () => {
-          if (signal?.aborted) throw new AbortError(abortReason(signal));
-          await this.waitForRateLimitCooldown(url, signal);
-          if (this.useCurlTransport) return this.curlBytes(url, signal);
+    return this.request(url, {}, signal);
+  }
 
-          try {
-            return await this.fetchBytes(url, signal);
-          } catch (error) {
-            if (this.cookie && error instanceof CloudflareChallengeError) {
-              this.useCurlTransport = true;
-              this.requestStats.curlFallbacks += 1;
-              return this.curlBytes(url, signal);
-            }
-            throw error;
+  async postForm(url: string, body: string, signal?: AbortSignal): Promise<string> {
+    const { data } = await this.request(url, { method: 'POST', body }, signal);
+    return new TextDecoder('gb18030').decode(data);
+  }
+
+  private async request(
+    url: string,
+    init: { method?: 'POST'; body?: string },
+    signal?: AbortSignal,
+  ): Promise<{ data: Uint8Array; response: Response }> {
+    // Legacy library callers can still supply a string, scoped to the initial host.
+    if (!this.cookieSeeded) {
+      this.cookieSeeded = true;
+      for (const pair of this.cookie?.split(';') ?? []) {
+        this.cookieJar.setCookieSync(`${pair.trim()}; Path=/`, url);
+      }
+    }
+    return pRetry(
+      async () => {
+        if (signal?.aborted) throw new AbortError(abortReason(signal));
+        try {
+          return await this.followRedirects(url, init, signal);
+        } catch (error) {
+          if (
+            !init.method &&
+            !this.useCurlTransport &&
+            (this.cookie || this.cookieJar.serializeSync()?.cookies?.length) &&
+            error instanceof CloudflareChallengeError
+          ) {
+            this.useCurlTransport = true;
+            this.requestStats.curlFallbacks += 1;
+            return this.followRedirects(url, init, signal);
+          }
+          throw error;
+        }
+      },
+      {
+        // Authentication submissions must never be replayed by automatic retries.
+        retries: init.method ? 0 : this.retries,
+        minTimeout: this.minDelayMs,
+        maxTimeout: 10_000,
+        factor: 2,
+        randomize: true,
+        onFailedAttempt: ({ error, attemptNumber, retriesLeft, retriesConsumed }) => {
+          if (retriesLeft > 0) {
+            this.requestStats.automaticRetries += 1;
+            this.onRetry?.({
+              url,
+              attemptNumber,
+              retriesLeft,
+              retriesConsumed,
+              error,
+              ...(error instanceof HttpStatusError ? { status: error.status } : {}),
+            });
           }
         },
-        {
-          retries: this.retries,
-          minTimeout: this.minDelayMs,
-          maxTimeout: 10_000,
-          factor: 2,
-          randomize: true,
-          onFailedAttempt: ({ error, attemptNumber, retriesLeft, retriesConsumed }) => {
-            if (retriesLeft > 0) {
-              this.requestStats.automaticRetries += 1;
-              this.onRetry?.({
-                url,
-                attemptNumber,
-                retriesLeft,
-                retriesConsumed,
-                error,
-                ...(error instanceof HttpStatusError ? { status: error.status } : {}),
-              });
-            }
-          },
-        },
-      ),
+      },
     );
+  }
+
+  private async followRedirects(
+    initialUrl: string,
+    init: { method?: 'POST'; body?: string },
+    signal?: AbortSignal,
+  ): Promise<{ data: Uint8Array; response: Response }> {
+    let url = initialUrl;
+    let current = init;
+    for (let hops = 0; hops < 10; hops += 1) {
+      signal?.throwIfAborted();
+      const output = await this.queue.add(async () => {
+        signal?.throwIfAborted();
+        await this.waitForRateLimitCooldown(url, signal);
+        const cookie = await this.cookieJar.getCookieString(url);
+        const headers = new Headers(this.headers);
+        if (cookie) headers.set('cookie', cookie);
+        if (current.method) headers.set('content-type', 'application/x-www-form-urlencoded');
+        return this.useCurlTransport
+          ? this.curlBytes(url, headers, current, signal)
+          : this.fetchBytes(url, headers, current, signal);
+      });
+      let changed = false;
+      for (const value of output.response.headers.getSetCookie()) {
+        if (await this.cookieJar.setCookie(value, url, { ignoreError: true })) changed = true;
+      }
+      if (changed) await this.onCookiesChanged?.();
+      const status = output.response.status;
+      this.recordStatus(status);
+      if ([301, 302, 303, 307, 308].includes(status)) {
+        const location = output.response.headers.get('location');
+        if (!location) throw new AbortError('站点重定向缺少目标地址');
+        const target = new URL(location, url);
+        if (!['https:', 'http:'].includes(target.protocol)) throw new AbortError('不支持的重定向');
+        if (
+          init.method &&
+          (target.origin !== new URL(initialUrl).origin || target.protocol !== 'https:')
+        ) {
+          throw new AbortError('登录重定向目标不受信任，已停止发送认证信息');
+        }
+        if (status === 303 || ((status === 301 || status === 302) && current.method)) current = {};
+        url = target.href;
+        continue;
+      }
+      if (!isSuccessfulStatus(status)) {
+        if (output.response.headers.get('cf-mitigated') === 'challenge') {
+          this.requestStats.cloudflareChallenges += 1;
+          throw new CloudflareChallengeError(url);
+        }
+        if (status === 429) {
+          this.requestStats.http429Responses += 1;
+          this.applyRateLimitCooldown(
+            url,
+            retryAfterMs(output.response.headers.get('retry-after')),
+          );
+        }
+        if (isRetryableStatus(status)) this.requestStats.retryableFailures += 1;
+        const error = new HttpStatusError(url, status);
+        if (!isRetryableStatus(status)) throw new AbortError(error);
+        throw error;
+      }
+      return output;
+    }
+    throw new AbortError('站点重定向次数过多');
   }
 
   private async fetchBytes(
     url: string,
+    headers: Headers,
+    init: { method?: 'POST'; body?: string },
     signal?: AbortSignal,
   ): Promise<{ data: Uint8Array; response: Response }> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combinedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     this.requestStats.fetchRequests += 1;
-    const response = await this.fetchWithCookies(url, {
-      headers: this.headers,
-      redirect: 'follow',
+    const response = await fetch(url, {
+      ...init,
+      headers,
+      redirect: 'manual',
       signal: combinedSignal,
     });
-    this.recordStatus(response.status);
-    if (!response.ok) {
-      if (response.headers.get('cf-mitigated') === 'challenge') {
-        this.requestStats.cloudflareChallenges += 1;
-        throw new CloudflareChallengeError(url);
-      }
-      if (response.status === 429) {
-        this.requestStats.http429Responses += 1;
-        this.applyRateLimitCooldown(url, retryAfterMs(response.headers.get('retry-after')));
-      }
-      if (isRetryableStatus(response.status)) this.requestStats.retryableFailures += 1;
-      const error = new HttpStatusError(url, response.status);
-      if (!isRetryableStatus(response.status)) throw new AbortError(error);
-      throw error;
-    }
     return { data: new Uint8Array(await response.arrayBuffer()), response };
   }
 
   private async curlBytes(
     url: string,
+    headers: Headers,
+    init: { method?: 'POST'; body?: string },
     signal?: AbortSignal,
   ): Promise<{ data: Uint8Array; response: Response }> {
     const curlOptions: CurlOptions = {
       timeoutMs: this.timeoutMs,
       userAgent: this.userAgent,
+      headers,
+      ...init,
     };
-    if (this.cookie) curlOptions.cookie = this.cookie;
     if (signal) curlOptions.signal = signal;
     this.requestStats.curlRequests += 1;
     const output = await runCurl(url, curlOptions);
-    this.recordStatus(output.status);
-    if (!isSuccessfulStatus(output.status)) {
-      if (output.status === 403) this.requestStats.cloudflareChallenges += 1;
-      if (output.status === 429) {
-        this.requestStats.http429Responses += 1;
-        this.applyRateLimitCooldown(url);
-      }
-      if (isRetryableStatus(output.status)) this.requestStats.retryableFailures += 1;
-      const error =
-        output.status === 403
-          ? new CloudflareChallengeError(url)
-          : new HttpStatusError(url, output.status);
-      if (!isRetryableStatus(output.status) || output.status === 403) throw new AbortError(error);
-      throw error;
-    }
-    return { data: output.data, response: new Response(null, { status: output.status }) };
+    return {
+      data: output.data,
+      response: new Response(null, { status: output.status, headers: output.headers }),
+    };
   }
 
   async text(url: string, encoding = 'gb18030', signal?: AbortSignal): Promise<string> {
@@ -211,6 +277,14 @@ export class HttpClient {
 
   async onIdle(): Promise<void> {
     await this.queue.onIdle();
+  }
+
+  getUserAgent(): string {
+    return this.userAgent;
+  }
+
+  getTransport(): 'node' | 'curl' {
+    return this.useCurlTransport ? 'curl' : 'node';
   }
 
   stats(): HttpClientStats {
@@ -287,14 +361,15 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 async function runCurl(
   url: string,
   options: CurlOptions,
-): Promise<{ data: Uint8Array; status: number }> {
+): Promise<{ data: Uint8Array; status: number; headers: Headers }> {
   const marker = '\n__WENKU8_HTTP_STATUS__:';
   const child = spawn('curl', ['--config', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
   const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
 
   child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-  child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+  // curl diagnostics may contain request secrets; never forward them to the CLI.
+  child.stderr.resume();
+  child.stdin.on('error', () => undefined);
 
   const abort = () => child.kill('SIGTERM');
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -302,14 +377,13 @@ async function runCurl(
   child.stdin.end(curlConfig(url, options, marker));
 
   const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.on('error', reject);
+    child.on('error', () => reject(new Error('无法启动 curl，请安装 curl 后重试')));
     child.on('close', resolve);
   }).finally(() => options.signal?.removeEventListener('abort', abort));
 
   if (options.signal?.aborted) throw new AbortError(abortReason(options.signal));
   if (exitCode !== 0) {
-    const message = Buffer.concat(stderr).toString('utf8').trim() || `curl exited with ${exitCode}`;
-    throw new Error(`curl 请求失败：${sanitizeCurlError(message)}`);
+    throw new Error(`curl 请求失败（退出码 ${exitCode ?? '未知'}）`);
   }
 
   const buffer = Buffer.concat(stdout);
@@ -322,28 +396,43 @@ async function runCurl(
       .trim(),
   );
   if (!Number.isInteger(status)) throw new Error('curl 响应状态码无效');
-  return { data: buffer.subarray(0, markerIndex), status };
+  let start = 0;
+  let headers = new Headers();
+  // --include can produce interim 1xx headers before the final response.
+  while (true) {
+    const end = buffer.indexOf('\r\n\r\n', start);
+    if (end < 0 || end >= markerIndex) throw new Error('curl 响应头无效');
+    const lines = buffer.subarray(start, end).toString('latin1').split('\r\n');
+    const headerStatus = Number(lines.shift()?.split(' ')[1]);
+    headers = new Headers();
+    for (const line of lines) {
+      const colon = line.indexOf(':');
+      if (colon > 0) headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+    }
+    start = end + 4;
+    if (headerStatus >= 200) break;
+  }
+  return { data: buffer.subarray(start, markerIndex), status, headers };
 }
 
 function curlConfig(url: string, options: CurlOptions, marker: string): string {
-  const headers = [
-    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
-    'Cache-Control: no-cache',
-    'Pragma: no-cache',
-    'Upgrade-Insecure-Requests: 1',
-    ...(options.cookie ? [`Cookie: ${options.cookie}`] : []),
-  ];
   return [
     'silent',
     'show-error',
-    'location',
+    'include',
+    'suppress-connect-headers',
     'compressed',
     `connect-timeout = "${Math.ceil(options.timeoutMs / 1000)}"`,
     `max-time = "${Math.ceil(options.timeoutMs / 1000)}"`,
     `url = "${escapeCurlConfig(url)}"`,
     `user-agent = "${escapeCurlConfig(options.userAgent)}"`,
-    ...headers.map((header) => `header = "${escapeCurlConfig(header)}"`),
+    ...Array.from(
+      options.headers,
+      ([key, value]) => `header = "${escapeCurlConfig(`${key}: ${value}`)}"`,
+    ),
+    ...(options.method
+      ? [`request = "POST"`, `data-raw = "${escapeCurlConfig(options.body ?? '')}"`]
+      : []),
     `write-out = "${escapeCurlConfig(`${marker}%{http_code}`)}"`,
     '',
   ].join('\n');
@@ -351,17 +440,19 @@ function curlConfig(url: string, options: CurlOptions, marker: string): string {
 
 interface CurlOptions {
   timeoutMs: number;
-  cookie?: string;
+  headers: Headers;
+  method?: 'POST';
+  body?: string;
   userAgent: string;
   signal?: AbortSignal;
 }
 
 function escapeCurlConfig(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-}
-
-function sanitizeCurlError(message: string): string {
-  return message.replace(/Cookie:[^\n\r]*/gi, 'Cookie: [redacted]');
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
 }
 
 function abortReason(signal: AbortSignal): Error {
