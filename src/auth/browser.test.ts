@@ -65,14 +65,22 @@ describe('browser authentication', () => {
     const { context } = await contextFor(form());
     const controller = new AbortController();
     let finishStartup!: (context: BrowserContext) => void;
+    let startupBegan!: () => void;
+    const began = new Promise<void>((resolve) => {
+      startupBegan = resolve;
+    });
     const startup = new Promise<BrowserContext>((resolve) => {
       finishStartup = resolve;
     });
     const result = loginInBrowser(credentials, new CookieJar(), {
       signal: controller.signal,
-      createContext: () => startup,
+      createContext: () => {
+        startupBegan();
+        return startup;
+      },
     });
     const rejection = expect(result).rejects.toThrow('登录已取消');
+    await began;
     controller.abort();
     finishStartup(context);
     await rejection;

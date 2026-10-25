@@ -135,6 +135,55 @@ good   最受关注       sort=goodnum
 new    新书一览       sort=postdate
 ```
 
+## HTTP 代理
+
+登录、浏览器验证和全部下载请求支持无需认证的 HTTP 代理；默认自动继承启动进程的环境变量。
+
+PowerShell：
+
+```powershell
+$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+$env:HTTP_PROXY = 'http://127.0.0.1:7890'
+$env:NO_PROXY = 'localhost,127.0.0.1,::1'
+wenku8 login
+wenku8 download 1973
+```
+
+POSIX shell：
+
+```sh
+export HTTPS_PROXY=http://127.0.0.1:7890
+export HTTP_PROXY=http://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,::1
+wenku8 login
+wenku8 download 1973
+```
+
+`HTTPS_PROXY=http://127.0.0.1:7890` 表示访问 HTTPS 目标时使用该 HTTP 代理，HTTPS 连接仍验证目标证书。
+
+| 配置            | 行为                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------- |
+| `--proxy <url>` | 本次全部使用指定代理，忽略环境代理与 `NO_PROXY`                                                               |
+| `--no-proxy`    | 本次全部直连，忽略环境代理与系统代理                                                                          |
+| 未传选项        | 按目标协议读取 `HTTP_PROXY` / `HTTPS_PROXY`，缺失时使用 `ALL_PROXY`，命中 `NO_PROXY` 时直连，否则无配置即直连 |
+
+所有变量也支持小写名称；同名变量的大小写值同时存在时，非空小写值优先，空白值按未设置处理。`HTTP_PROXY` 不作为 HTTPS 目标的兜底。代理配置只作用于本次运行，不写入登录态或工作区。全局选项可放在子命令前后，也适用于交互模式：
+
+```sh
+wenku8 --proxy http://127.0.0.1:7890 login
+wenku8 download 1973 --proxy http://127.0.0.1:7890
+wenku8 --proxy http://127.0.0.1:7890
+wenku8 --no-proxy info 1973
+```
+
+`--proxy` 和 `--no-proxy` 不能同时使用。代理失败会报告错误，不自动改为直连。改变网络出口后，站点可能要求重新登录或验证。
+
+`NO_PROXY` 是逗号分隔的列表，支持域名及其子域名、精确 IPv4 / IPv6（IPv6 不带方括号）以及独立的 `*`。例如 `example.test` 或 `.example.test` 均匹配本域及 `a.example.test`，不匹配 `notexample.test`；匹配忽略域名大小写、覆盖所有端口，不通过 DNS 将域名与 IP 相互匹配。空条目忽略；`*` 全部直连。localhost 和回环地址需要显式列入列表才会绕过代理。暂不支持端口限定、CIDR 网段和 `*.example.test` 等模式；自动模式遇到这些条目会明确报错。
+
+本版只接受 `http://host[:port]`，省略端口使用 80；不支持代理认证、`https://` 代理服务器、SOCKS、PAC 或自动发现系统代理。纯离线命令及帮助、版本输出不受无效代理环境变量影响。
+
+库调用可通过 `new Wenku8Client({ proxy: 'http://127.0.0.1:7890' })` 指定代理，`proxy: false` 强制直连，省略 `proxy` 自动继承环境。需要显式结束客户端连接时调用 `await client.http.close()`。
+
 ## 登录态
 
 搜索、榜单、详情和下载等联网命令需要程序保存的账号登录态。首次使用、会话失效或升级自手动 Cookie 版本后，执行：

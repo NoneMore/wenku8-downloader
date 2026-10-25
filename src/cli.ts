@@ -29,6 +29,7 @@ import {
   formatHttpRetry,
 } from './cli/ui.js';
 import type { HttpRetryEvent } from './http/client.js';
+import { ProxyPolicy, type ProxyOptions } from './http/proxy.js';
 
 const VERSION = '5.1.0';
 const BACK = '__back__';
@@ -44,8 +45,31 @@ const SUGOI_YEARS = Array.from({ length: 22 }, (_value, index) => 2026 - index) 
 const DEFAULT_OUTPUT_DIRECTORY = userDownloadsDirectory();
 const DEFAULT_WORK_DIRECTORY = userWorkspaceDirectory();
 const program = new Command();
+let proxySpecified = false;
+let directSpecified = false;
 
-program.name('wenku8').description('可恢复、图片完整性优先的轻小说 EPUB 下载器').version(VERSION);
+program
+  .name('wenku8')
+  .description('可恢复、图片完整性优先的轻小说 EPUB 下载器')
+  .version(VERSION)
+  .configureHelp({ showGlobalOptions: true })
+  .option('--proxy <url>', '强制使用无需认证的 HTTP 代理，忽略代理环境变量和 NO_PROXY')
+  .option('--no-proxy', '强制全部直连，忽略代理环境变量')
+  .on('option:proxy', () => {
+    proxySpecified = true;
+  })
+  .on('option:no-proxy', () => {
+    directSpecified = true;
+  })
+  .hook('preAction', () => {
+    if (proxySpecified && directSpecified) throw new Error('--proxy 与 --no-proxy 不能同时使用');
+    new ProxyPolicy(networkOptions().proxy);
+  });
+
+function networkOptions(): ProxyOptions {
+  const { proxy } = program.opts<ProxyOptions>();
+  return proxy === undefined ? {} : { proxy };
+}
 
 // Reject old credential flags before Commander can echo their secret values in diagnostics.
 if (process.argv.slice(2).some((arg) => /^--cookie(?:-file)?(?:=|$)/.test(arg))) {
@@ -76,6 +100,7 @@ program
       const session = await loginAccount(
         { username: username.trim(), password: secret },
         {
+          ...networkOptions(),
           signal,
           onBrowserRequired: () =>
             console.log(
@@ -403,6 +428,7 @@ async function createClient(
   const session = await store.load();
   if (!session) throw new Error('尚未登录，请先运行 `wenku8 login` 使用站点账号登录。');
   return new Wenku8Client({
+    ...networkOptions(),
     concurrency: options.concurrency ?? 3,
     requestsPerSecond: options.rateLimit ?? 1,
     preferCurl: session.transport === 'curl',

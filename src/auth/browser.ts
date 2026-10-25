@@ -24,9 +24,14 @@ import {
   type LoginOptions,
 } from './login.js';
 import type { AccountSession } from './session.js';
+import { ProxyPolicy, isProxyError } from '../http/proxy.js';
+import { startBrowserProxy } from '../http/browser-proxy.js';
 
 interface BrowserLoginOptions extends LoginOptions {
-  createContext?: (signal: AbortSignal) => Promise<BrowserContext>;
+  createContext?: (
+    signal: AbortSignal,
+    proxy: { server: string; bypass: string },
+  ) => Promise<BrowserContext>;
 }
 
 class BrowserLoginError extends Error {}
@@ -42,6 +47,12 @@ export async function loginInBrowser(
   ]);
   let context: BrowserContext | undefined;
   let browser: Browser | null | undefined;
+  let relay: Awaited<ReturnType<typeof startBrowserProxy>> | undefined;
+  const requestedTargets = new Set<string>();
+  let configurationFailure: Error | undefined;
+  const proxyFailure = () =>
+    configurationFailure ??
+    [...requestedTargets].map((url) => relay?.failureFor(url)).find(Boolean);
   const abort = () => {
     void context?.close().catch(() => undefined);
   };
@@ -50,13 +61,26 @@ export async function loginInBrowser(
   let phase = '初始化浏览器';
   try {
     signal.throwIfAborted();
-    context = await (options.createContext ?? openLoginContext)(signal);
+    const policy = new ProxyPolicy(options.proxy);
+    policy.resolve(LOGIN_URL);
+    relay = await startBrowserProxy(policy);
+    signal.throwIfAborted();
+    context = await (options.createContext ?? openLoginContext)(signal, relay.settings);
     browser = context.browser();
     signal.throwIfAborted();
     context.setDefaultTimeout(5_000);
     // Never submit a top-level login form to another host or an insecure URL.
     await context.route('**/*', async (route) => {
       const request = route.request();
+      requestedTargets.add(request.url());
+      try {
+        policy.resolve(request.url());
+      } catch (error) {
+        if (!isProxyError(error)) throw error;
+        configurationFailure = error;
+        await route.abort();
+        return;
+      }
       if (
         request.isNavigationRequest() &&
         request.frame() === request.frame().page().mainFrame() &&
@@ -91,6 +115,8 @@ export async function loginInBrowser(
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     while (!page.isClosed()) {
       signal.throwIfAborted();
+      const networkFailure = proxyFailure();
+      if (networkFailure) throw networkFailure;
       const url = new URL(page.url());
       if (url.origin !== SITE_ORIGIN)
         throw new BrowserLoginError('浏览器登录离开了受信任站点，已停止登录');
@@ -120,6 +146,7 @@ export async function loginInBrowser(
         for (const preferCurl of [true, false]) {
           const cookieJar = await snapshot.clone();
           const http = new HttpClient({
+            ...(options.proxy !== undefined ? { proxy: options.proxy } : {}),
             cookieJar,
             userAgent,
             preferCurl,
@@ -131,7 +158,10 @@ export async function loginInBrowser(
             return { id: randomUUID(), userAgent, transport: http.getTransport(), cookieJar };
           } catch (error) {
             signal.throwIfAborted();
+            if (isProxyError(error)) throw error;
             failures.push(`${preferCurl ? 'curl' : 'Node'}：${verificationFailure(error)}`);
+          } finally {
+            await http.close();
           }
         }
         throw new BrowserLoginError(
@@ -164,6 +194,9 @@ export async function loginInBrowser(
           ? '浏览器登录等待超过 5 分钟，请重新运行 `wenku8 login`'
           : '登录已取消',
       );
+    const failure = proxyFailure();
+    if (failure) throw failure;
+    if (isProxyError(error)) throw error;
     // Playwright call logs can contain filled passwords or rendered page content.
     if (error instanceof BrowserLoginError) throw error;
     const category =
@@ -173,16 +206,21 @@ export async function loginInBrowser(
     signal.removeEventListener('abort', abort);
     await context?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
+    await relay?.close();
   }
 }
 
-async function openLoginContext(signal: AbortSignal): Promise<BrowserContext> {
+async function openLoginContext(
+  signal: AbortSignal,
+  proxy: { server: string; bypass: string },
+): Promise<BrowserContext> {
   let browser: Browser | undefined;
   for (const channel of ['chrome', 'msedge', undefined]) {
     signal.throwIfAborted();
     try {
       browser = await chromium.launch({
         headless: false,
+        proxy,
         ...(channel ? { channel } : {}),
         timeout: 15_000,
       });

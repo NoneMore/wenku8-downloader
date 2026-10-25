@@ -90,6 +90,9 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 
 - `Wenku8Client` 负责站点地址、正文/目录/搜索接口与编码处理；页面结构差异应尽量封装在 `src/site/` 并覆盖解析测试。
 - `HttpClient` 集中封装队列并发、每秒请求上限、重试、超时、HTTP 429 冷却及按当前条件启用的 curl 回退，避免下载、图片与 CLI 各自建立不一致的网络策略。
+- [`src/http/proxy.ts`](../../src/http/proxy.ts) 统一解析显式 HTTP 代理、强制直连和代理环境变量，每个重定向目标重新判定路由。Node 使用独立的 undici dispatcher，curl 禁用用户配置并显式设置代理，均不依赖各传输自身的环境代理规则；代理故障不自动直连，407 明确报告为不支持代理认证。
+- [`src/http/browser-proxy.ts`](../../src/http/browser-proxy.ts) 为登录浏览器启动临时回环转发服务，让页面、表单和子资源使用同一套逐目标策略。HTTP 请求转发到选中的代理或直连目标，HTTPS CONNECT 保持字节隧道，由浏览器验证 TLS；浏览器不再自行使用系统代理或隐式绕过回环地址。转发器只将实际页面请求关联的代理错误反馈给登录流程，后台流量不会覆盖登录目标的结果；登录结束或取消时关闭浏览器及全部转发连接。
+- CLI 的 `--proxy` / `--no-proxy` 是单次运行的全局选项，也适用于交互模式和登录后的会话验证。代理配置不持久化，不改变会话与 Manifest 格式；库调用在 `HttpClientOptions` 上提供相同的三种模式，`HttpClient.close()` 可显式释放其连接。
 - [`src/auth/login.ts`](../../src/auth/login.ts) 使用账号密码完成站点认证，必要时交给 [`src/auth/browser.ts`](../../src/auth/browser.ts) 启动 Playwright 管理的独立可见浏览器。浏览器正常提交站点表单，人工验证由用户完成；结束时自动关闭浏览器上下文，不读取日常浏览器资料。
 - [`src/site/auth.ts`](../../src/site/auth.ts) 封装登录表单、GBK 提交编码、账号页面证据及登录失效页面的识别。认证后必须用实际 CLI HTTP 传输验证账号页面，才能保存新会话；浏览器成功不代表交接必然成功。
 - [`src/auth/session.ts`](../../src/auth/session.ts) 在用户配置目录的 `session.json` 保存版本为 `1` 的 CookieJar、User-Agent、已验证的 Node/curl 传输和会话 ID，不保存账号密码。受限权限临时文件与原子替换保护既有会话；文件锁内校验会话 ID，并将本次响应的 Cookie 增量（含删除）合并到当前磁盘状态，避免不同进程的旧快照覆盖。此版本独立于工作区 Manifest 版本。

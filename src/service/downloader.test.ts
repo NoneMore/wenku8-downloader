@@ -15,6 +15,7 @@ import {
 import { EpubBuilder } from '../epub/builder.js';
 import { manifestSchema } from '../storage/schema.js';
 import { Downloader, type ProgressEvent } from './downloader.js';
+import { ProxyAuthenticationError, ProxyConfigurationError } from '../http/proxy.js';
 
 describe('Downloader', () => {
   for (const preferCurl of [false, true]) {
@@ -81,7 +82,11 @@ describe('Downloader', () => {
     }
   }
 
-  it('propagates a definite image authentication block even when missing images are allowed', async () => {
+  it.each([
+    new CloudflareChallengeError('https://www.wenku8.net/cover.jpg'),
+    new ProxyAuthenticationError(),
+    new ProxyConfigurationError('http_proxy：仅支持 HTTP 代理'),
+  ])('propagates image authentication and proxy blocks even when missing images are allowed: %s', async (blocked) => {
     const client = new Wenku8Client();
     const raw =
       '<div id="content"><span><b>封面认证测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
@@ -89,7 +94,6 @@ describe('Downloader', () => {
     book.coverSourceUrl = 'https://www.wenku8.net/cover.jpg';
     vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
     vi.spyOn(client, 'getCatalogue').mockResolvedValue({ raw: '<table></table>', volumes: [] });
-    const blocked = new CloudflareChallengeError(book.coverSourceUrl);
     vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
     const builder = new EpubBuilder();
     const build = vi.spyOn(builder, 'build');
@@ -107,8 +111,10 @@ describe('Downloader', () => {
   for (const blocked of [
     new AuthenticationRequiredError(),
     new CloudflareChallengeError('https://www.wenku8.net/novel/42/2.htm'),
+    new ProxyAuthenticationError(),
+    new ProxyConfigurationError('https_proxy：仅支持 HTTP 代理'),
   ]) {
-    it('stops on authentication failure and reuses completed chapters after a fresh login', async () => {
+    it('stops on authentication or proxy failure and reuses completed chapters after recovery', async () => {
       const client = new Wenku8Client();
       const catalogueUrl = 'https://www.wenku8.net/novel/42/index.htm';
       const raw =

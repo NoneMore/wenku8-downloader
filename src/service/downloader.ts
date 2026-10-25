@@ -14,6 +14,7 @@ import { parseBookDetails, parseCatalogue } from '../site/parser.js';
 import { isCopyrightUnavailable, Wenku8Client } from '../site/client.js';
 import { applyIllustrationLayout, type IllustrationMap } from '../domain/illustration-layout.js';
 import { prepareIllustrationLayout, type IllustrationLayoutReport } from './illustration-layout.js';
+import { isProxyError } from '../http/proxy.js';
 
 export interface DownloadOptions {
   workDirectory?: string;
@@ -119,7 +120,7 @@ export class Downloader {
               sourceUrl: task.chapter.sourceUrl,
             });
           } catch (error) {
-            if (error instanceof CopyrightUnavailableError || isAuthenticationError(error)) {
+            if (error instanceof CopyrightUnavailableError || isAuthenticationError(error) || isProxyError(error)) {
               emit({
                 phase: 'chapters',
                 kind: 'failed',
@@ -211,7 +212,7 @@ export class Downloader {
         try {
           acquired.set(url, await task);
         } catch (error) {
-          if (isAuthenticationError(error)) throw error;
+          if (isAuthenticationError(error) || isProxyError(error)) throw error;
           // Missing assets remain unresolved and are reported by the completeness validator.
         } finally {
           completedImages += 1;
