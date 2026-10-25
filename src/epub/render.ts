@@ -1,4 +1,4 @@
-import type { Asset, Book, Chapter, ContentBlock } from '../domain/book.js';
+import type { Asset, Book, Chapter, ContentBlock, Volume } from '../domain/book.js';
 import { epubImageName } from '../assets/image-store.js';
 import { escapeXml, xmlDocument } from './xml.js';
 
@@ -14,6 +14,13 @@ export function renderChapter(book: Book, chapter: Chapter): string {
 </html>`);
 }
 
+export function renderVolume(volume: Volume): string {
+  return xmlDocument(`${XHTML_OPEN}
+<head><title>${escapeXml(volume.title)}</title><link rel="stylesheet" type="text/css" href="../styles/book.css"/></head>
+<body><section epub:type="part" class="volume"><h1>${escapeXml(volume.title)}</h1></section></body>
+</html>`);
+}
+
 export function renderCover(book: Book): string | undefined {
   const cover = book.assets.find((asset) => asset.id === book.coverAssetId);
   if (!cover) return undefined;
@@ -23,7 +30,11 @@ export function renderCover(book: Book): string | undefined {
 </html>`);
 }
 
-export function renderNavigation(book: Book, chapterFiles: Map<string, string>): string {
+export function renderNavigation(
+  book: Book,
+  chapterFiles: Map<string, string>,
+  volumeFiles: Map<string, string>,
+): string {
   const cover = book.assets.some((asset) => asset.id === book.coverAssetId)
     ? '<li><a href="cover.xhtml">封面</a></li>'
     : '';
@@ -32,15 +43,21 @@ export function renderNavigation(book: Book, chapterFiles: Map<string, string>):
       const chapters = volume.chapters
         .map(
           (chapter) =>
-            `<li><a href="text/${chapterFiles.get(chapter.id) ?? ''}">${escapeXml(chapter.title)}</a></li>`,
+            `<li><a href="${textHref(chapterFiles, chapter.id)}">${escapeXml(chapter.title)}</a></li>`,
         )
         .join('');
-      return `<li><span>${escapeXml(volume.title)}</span><ol>${chapters}</ol></li>`;
+      return `<li><a href="${textHref(volumeFiles, volume.id)}">${escapeXml(volume.title)}</a>${chapters ? `<ol>${chapters}</ol>` : ''}</li>`;
     })
     .join('');
   return xmlDocument(`${XHTML_OPEN}
 <head><title>目录</title></head><body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>${cover}${volumes}</ol></nav></body>
 </html>`);
+}
+
+function textHref(files: Map<string, string>, id: string): string {
+  const filename = files.get(id);
+  if (!filename) throw new Error(`EPUB 导航缺少文档：${id}`);
+  return `text/${escapeXml(filename)}`;
 }
 
 function renderBlock(block: ContentBlock, assets: Map<string, Asset>): string {

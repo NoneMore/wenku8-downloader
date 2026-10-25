@@ -6,7 +6,7 @@ import archiver from 'archiver';
 import type { Book } from '../domain/book.js';
 import { validateBookCompleteness } from '../domain/validate.js';
 import { epubImageName } from '../assets/image-store.js';
-import { renderChapter, renderCover, renderNavigation } from './render.js';
+import { renderChapter, renderCover, renderNavigation, renderVolume } from './render.js';
 import { escapeXml, xmlDocument } from './xml.js';
 
 const BOOK_CSS = `
@@ -18,11 +18,17 @@ figure { margin: 1.25em 0; text-align: center; }
 img { max-width: 100%; max-height: 95vh; object-fit: contain; }
 .cover { margin: 0; padding: 0; text-align: center; }
 .cover img { width: 100%; height: 100vh; object-fit: contain; }
+.volume { text-align: center; margin-top: 30vh; }
 .note, .missing-image { color: #666; text-indent: 0; }
 `;
 
 export interface EpubBuildOptions {
   allowMissingImages?: boolean;
+}
+
+interface TextDocument {
+  id: string;
+  filename: string;
 }
 
 export class EpubBuilder {
@@ -44,11 +50,22 @@ export class EpubBuilder {
     ]);
 
     const chapterFiles = new Map<string, string>();
+    const volumeFiles = new Map<string, string>();
+    const textDocuments: TextDocument[] = [];
     let chapterNumber = 0;
-    for (const volume of book.volumes) {
+    for (const [volumeIndex, volume] of book.volumes.entries()) {
+      const volumeNumber = String(volumeIndex + 1).padStart(4, '0');
+      const volumeFilename = `volume-${volumeNumber}.xhtml`;
+      volumeFiles.set(volume.id, volumeFilename);
+      textDocuments.push({ id: `volume-${volumeNumber}`, filename: volumeFilename });
+      await writeFile(
+        path.join(packageDirectory, 'EPUB', 'text', volumeFilename),
+        renderVolume(volume),
+      );
       for (const chapter of volume.chapters) {
         const filename = `${String(++chapterNumber).padStart(4, '0')}.xhtml`;
         chapterFiles.set(chapter.id, filename);
+        textDocuments.push({ id: `chapter-${chapter.id}`, filename });
         await writeFile(
           path.join(packageDirectory, 'EPUB', 'text', filename),
           renderChapter(book, chapter),
@@ -70,18 +87,18 @@ export class EpubBuilder {
       writeFile(path.join(packageDirectory, 'EPUB', 'styles', 'book.css'), BOOK_CSS.trim()),
       writeFile(
         path.join(packageDirectory, 'EPUB', 'nav.xhtml'),
-        renderNavigation(book, chapterFiles),
+        renderNavigation(book, chapterFiles, volumeFiles),
       ),
       writeFile(
         path.join(packageDirectory, 'EPUB', 'package.opf'),
-        packageOpf(book, chapterFiles, Boolean(coverDocument)),
+        packageOpf(book, textDocuments, Boolean(coverDocument)),
       ),
       ...(coverDocument
         ? [writeFile(path.join(packageDirectory, 'EPUB', 'cover.xhtml'), coverDocument)]
         : []),
     ]);
 
-    await verifyPackageReferences(packageDirectory, book, chapterFiles);
+    await verifyPackageReferences(packageDirectory, book, textDocuments);
     const temporaryOutput = `${outputPath}.part-${process.pid}`;
     await createArchive(packageDirectory, temporaryOutput);
     await rename(temporaryOutput, outputPath);
@@ -95,7 +112,7 @@ function containerXml(): string {
 </container>`);
 }
 
-function packageOpf(book: Book, chapterFiles: Map<string, string>, hasCover: boolean): string {
+function packageOpf(book: Book, textDocuments: TextDocument[], hasCover: boolean): string {
   const identifier = `urn:uuid:${randomUUID()}`;
   const assets = book.assets
     .map((asset) => {
@@ -103,15 +120,13 @@ function packageOpf(book: Book, chapterFiles: Map<string, string>, hasCover: boo
       return `<item id="asset-${asset.id}" href="images/${escapeXml(epubImageName(asset))}" media-type="${asset.mediaType}"${properties}/>`;
     })
     .join('\n    ');
-  const chapters = [...chapterFiles.entries()]
+  const documents = textDocuments
     .map(
-      ([id, file]) =>
-        `<item id="chapter-${id}" href="text/${file}" media-type="application/xhtml+xml"/>`,
+      ({ id, filename }) =>
+        `<item id="${escapeXml(id)}" href="text/${escapeXml(filename)}" media-type="application/xhtml+xml"/>`,
     )
     .join('\n    ');
-  const spine = [...chapterFiles.keys()]
-    .map((id) => `<itemref idref="chapter-${id}"/>`)
-    .join('\n    ');
+  const spine = textDocuments.map(({ id }) => `<itemref idref="${escapeXml(id)}"/>`).join('\n    ');
   return xmlDocument(`<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="${escapeXml(book.language)}">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">${identifier}</dc:identifier>
@@ -123,7 +138,7 @@ function packageOpf(book: Book, chapterFiles: Map<string, string>, hasCover: boo
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="css" href="styles/book.css" media-type="text/css"/>
     ${hasCover ? '<item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>' : ''}
-    ${chapters}
+    ${documents}
     ${assets}
   </manifest>
   <spine>${hasCover ? '<itemref idref="cover-page" linear="no"/>' : ''}
@@ -153,10 +168,10 @@ async function createArchive(packageDirectory: string, outputPath: string): Prom
 async function verifyPackageReferences(
   packageDirectory: string,
   book: Book,
-  chapterFiles: Map<string, string>,
+  textDocuments: TextDocument[],
 ): Promise<void> {
-  for (const file of chapterFiles.values()) {
-    const content = await readFile(path.join(packageDirectory, 'EPUB', 'text', file), 'utf8');
+  for (const { filename } of textDocuments) {
+    const content = await readFile(path.join(packageDirectory, 'EPUB', 'text', filename), 'utf8');
     for (const match of content.matchAll(/<img[^>]+src="\.\.\/images\/([^"]+)"/g)) {
       const filename = match[1];
       if (!filename) continue;
