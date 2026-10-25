@@ -10,7 +10,13 @@ import {
   parseSugoiResults,
 } from './parser.js';
 import { HttpClient, type HttpClientOptions } from '../http/client.js';
-import { CopyrightUnavailableError } from '../domain/errors.js';
+import {
+  AuthenticationRequiredError,
+  CloudflareChallengeError,
+  CopyrightUnavailableError,
+  isAuthenticationError,
+} from '../domain/errors.js';
+import { isChallengePage, isLoginRequired } from './auth.js';
 
 const BASE_URL = 'https://www.wenku8.net';
 
@@ -51,7 +57,7 @@ export class Wenku8Client {
     signal?: AbortSignal,
   ): Promise<{ book: BookDetails; raw: string }> {
     const sourceUrl = `${BASE_URL}/book/${bookId}.htm`;
-    const raw = await this.http.text(sourceUrl, 'gb18030', signal);
+    const raw = await this.siteText(sourceUrl, 'gb18030', signal);
     return { book: parseBookDetails(raw, bookId, sourceUrl), raw };
   }
 
@@ -59,7 +65,7 @@ export class Wenku8Client {
     url: string,
     signal?: AbortSignal,
   ): Promise<{ volumes: Volume[]; raw: string }> {
-    const raw = await this.http.text(url, 'gb18030', signal);
+    const raw = await this.siteText(url, 'gb18030', signal);
     return { volumes: parseCatalogue(raw, url), raw };
   }
 
@@ -67,7 +73,7 @@ export class Wenku8Client {
     chapter: Chapter,
     signal?: AbortSignal,
   ): Promise<{ chapter: Chapter; raw: string }> {
-    const raw = await this.http.text(chapter.sourceUrl, 'gb18030', signal);
+    const raw = await this.siteText(chapter.sourceUrl, 'gb18030', signal);
     if (isCopyrightUnavailable(raw)) {
       throw new CopyrightUnavailableError(chapter.title, chapter.sourceUrl);
     }
@@ -85,17 +91,24 @@ export class Wenku8Client {
       .map((byte) => `%${byte.toString(16).padStart(2, '0')}`)
       .join('');
     const url = `${BASE_URL}/modules/article/search.php?searchtype=${type}&searchkey=${encoded}`;
-    return parseSearchResults(await this.http.text(url));
+    return parseSearchResults(await this.siteText(url));
   }
 
   async toplist(sort: ToplistSort = 'dayvisit'): Promise<BookSummary[]> {
     const url = `${BASE_URL}/modules/article/toplist.php?sort=${sort}`;
-    return parseSearchResults(await this.http.text(url));
+    return parseSearchResults(await this.siteText(url));
   }
 
   async sugoi(year: SugoiYear = 2026): Promise<BookSummary[]> {
     const url = `${BASE_URL}/zt/sugoi/${year}.php`;
-    return parseSugoiResults(await this.http.text(url));
+    return parseSugoiResults(await this.siteText(url));
+  }
+
+  private async siteText(url: string, encoding = 'gb18030', signal?: AbortSignal): Promise<string> {
+    const html = await this.http.text(url, encoding, signal);
+    if (isChallengePage(html)) throw new CloudflareChallengeError(url);
+    if (isLoginRequired(html)) throw new AuthenticationRequiredError();
+    return html;
   }
 
   private async getPackedChapter(chapter: Chapter, signal?: AbortSignal): Promise<Chapter> {
@@ -111,8 +124,9 @@ export class Wenku8Client {
     let lastError: unknown;
     for (const [url, encoding] of candidates) {
       try {
-        return parsePackedChapter(await this.http.text(url, encoding, signal), chapter);
+        return parsePackedChapter(await this.siteText(url, encoding, signal), chapter);
       } catch (error) {
+        if (isAuthenticationError(error)) throw error;
         lastError = error;
       }
     }

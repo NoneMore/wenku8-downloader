@@ -6,26 +6,28 @@
 
 wenku8-downloader 是 Node.js / TypeScript 的命令行轻小说下载器。它访问 Wenku8 站点，获取详情、目录、章节及图片，在本地可恢复工作区保留下载资料，随后生成 EPUB 3。
 
-主要外部边界是：用户与 CLI、站点 HTTP 请求及用户 Cookie、本地文件系统、可选的外部 EPUBCheck 工具。发布包通过 `package.json` 的 `bin` 暴露 `wenku8` 命令；`src/index.ts` 另导出下载器、站点客户端、EPUB 构建器及领域类型。
+主要外部边界是：用户与 CLI、站点认证及 HTTP 请求、登录时的独立浏览器、本地文件系统、可选的外部 EPUBCheck 工具。发布包通过 `package.json` 的 `bin` 暴露 `wenku8` 命令；`src/index.ts` 另导出下载器、站点客户端、EPUB 构建器及领域类型。
 
 ## 模块职责
 
-| 位置 | 当前职责 |
-| --- | --- |
-| [`src/cli.ts`](../../src/cli.ts)、[`src/cli/`](../../src/cli/) | 命令解析、交互界面、登录态、进度与 EPUBCheck 调用 |
-| [`src/domain/`](../../src/domain/) | Book、Volume、Chapter、Asset 等数据模型、ID、错误和完整性校验 |
-| [`src/site/`](../../src/site/) | 站点 URL、GBK/GB18030 文本与 HTML 结构解析 |
-| [`src/http/client.ts`](../../src/http/client.ts) | 请求队列、Cookie 请求、超时、限速、重试、429 冷却、curl 回退和统计 |
-| [`src/service/downloader.ts`](../../src/service/downloader.ts) | 详情与章节下载的编排、整轮重试、图片任务聚合、EPUB 生成 |
-| [`src/storage/`](../../src/storage/) | Manifest、缓存及工作区、文件路径处理 |
-| [`src/assets/image-store.ts`](../../src/assets/image-store.ts) | 图片获取、解码验证、格式规范化与缓存复用 |
-| [`src/epub/`](../../src/epub/) | XHTML/导航渲染、资源清单、ZIP 打包及包内引用检查 |
+| 位置                                                           | 当前职责                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`src/cli.ts`](../../src/cli.ts)、[`src/cli/`](../../src/cli/) | 命令解析、交互界面、登录态、进度与 EPUBCheck 调用                  |
+| [`src/auth/`](../../src/auth/)                                 | 账号登录编排、独立浏览器验证、会话验证与用户级持久化               |
+| [`src/domain/`](../../src/domain/)                             | Book、Volume、Chapter、Asset 等数据模型、ID、错误和完整性校验      |
+| [`src/site/`](../../src/site/)                                 | 站点 URL、GBK/GB18030 文本与 HTML 结构解析                         |
+| [`src/http/client.ts`](../../src/http/client.ts)               | 请求队列、Cookie 请求、超时、限速、重试、429 冷却、curl 回退和统计 |
+| [`src/service/downloader.ts`](../../src/service/downloader.ts) | 详情与章节下载的编排、整轮重试、图片任务聚合、EPUB 生成            |
+| [`src/storage/`](../../src/storage/)                           | Manifest、缓存及工作区、文件路径处理                               |
+| [`src/assets/image-store.ts`](../../src/assets/image-store.ts) | 图片获取、解码验证、格式规范化与缓存复用                           |
+| [`src/epub/`](../../src/epub/)                                 | XHTML/导航渲染、资源清单、ZIP 打包及包内引用检查                   |
 
 关键依赖关系示意：
 
 ```text
 CLI (src/cli.ts)
-  ├─ Cookie / 用户目录 (src/cli/cookie.ts)
+  ├─ 用户目录 (src/cli/paths.ts)
+  ├─ 账号登录 / 浏览器 / 会话 (src/auth/)
   └─ Downloader (src/service/downloader.ts)
        ├─ Wenku8Client (src/site/client.ts)
        │    ├─ Parser (src/site/parser.ts)
@@ -44,7 +46,7 @@ Domain types and errors are used across layers.
 
 ## 典型下载数据流
 
-1. CLI 解析书籍 ID、Cookie、网络选项、工作区与输出路径。
+1. CLI 解析书籍 ID、网络选项、工作区与输出路径，从用户配置目录加载程序管理的账号会话；没有会话时提示先执行 `wenku8 login`。
 2. `Downloader` 打开对应 `BookWorkspace`，尝试复用已经标记完成且文件存在的详情/目录资料。
 3. `Wenku8Client` 通过 `HttpClient` 获取站点数据，由 `src/site/parser.ts` 解析详情、目录与章节，形成领域模型。
 4. `Downloader` 并行调度章节，失败时根据选项重试。章节仍有失败则终止下载并报告，而不是继续交付缺章结果。
@@ -78,7 +80,11 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 
 - `Wenku8Client` 负责站点地址、正文/目录/搜索接口与编码处理；页面结构差异应尽量封装在 `src/site/` 并覆盖解析测试。
 - `HttpClient` 集中封装队列并发、每秒请求上限、重试、超时、HTTP 429 冷却及按当前条件启用的 curl 回退，避免下载、图片与 CLI 各自建立不一致的网络策略。
-- [`src/cli/cookie.ts`](../../src/cli/cookie.ts) 解析显式 Cookie、环境变量及本地文件，管理用户配置目录中的 Cookie。该凭证不应提交进仓库或写入公开日志。
+- [`src/auth/login.ts`](../../src/auth/login.ts) 使用账号密码完成站点认证，必要时交给 [`src/auth/browser.ts`](../../src/auth/browser.ts) 启动 Playwright 管理的独立可见浏览器。浏览器正常提交站点表单，人工验证由用户完成；结束时自动关闭浏览器上下文，不读取日常浏览器资料。
+- [`src/site/auth.ts`](../../src/site/auth.ts) 封装登录表单、GBK 提交编码、账号页面证据及登录失效页面的识别。认证后必须用实际 CLI HTTP 传输验证账号页面，才能保存新会话；浏览器成功不代表交接必然成功。
+- [`src/auth/session.ts`](../../src/auth/session.ts) 在用户配置目录的 `session.json` 保存版本为 `1` 的 CookieJar、User-Agent、已验证的 Node/curl 传输和会话 ID，不保存账号密码。受限权限临时文件与原子替换保护既有会话；文件锁内校验会话 ID，并将本次响应的 Cookie 增量（含删除）合并到当前磁盘状态，避免不同进程的旧快照覆盖。此版本独立于工作区 Manifest 版本。
+- Node 与 curl 按域、路径、有效期和安全属性使用 CookieJar，逐跳回收响应 Cookie；浏览器交接时两个候选传输分别使用独立快照，仅保存验证成功的一份。直接账号登录使用 Node，不要求预装 curl。会发送会话或认证信息的请求禁止 HTTPS 重定向降级 HTTP；不携带凭证的公共资源保留原有跳转能力。认证 POST 不自动重试，也不跟随要求保留 POST 的 307/308 重定向。Cookie 落盘失败直接报告，不重发已完成请求。CLI 不接受手动 Cookie 参数、环境变量或文件导入；库方式仍可在 HTTP 配置中提供内部 Cookie。凭证不得提交进仓库或写入公开日志。
+- 普通联网命令通过登录表单、错误页及验证页结构识别明确的认证阻断，不按小说中的“验证码”等文字判断。认证错误沿下载包回退、章节及图片路径向上传播；章节下载停止后保留工作区，提示重新登录，不在下载期间自动弹出浏览器。
 - 站点可用性、防护与使用条件是外部约束，不能假定 HTML 或认证机制永远稳定。
 
 ## EPUB 与完整性边界
@@ -96,10 +102,11 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 
 按修改模块优先检查就近测试：
 
-- [站点解析](../../src/site/parser.test.ts)、[HTTP 客户端](../../src/http/client.test.ts)
+- [站点解析](../../src/site/parser.test.ts)、[认证解析](../../src/site/auth.test.ts)、[HTTP 客户端](../../src/http/client.test.ts)
 - [下载编排与恢复](../../src/service/downloader.test.ts)
 - [存储](../../src/storage/workspace.test.ts)、[路径](../../src/storage/paths.test.ts)
-- [完整性](../../src/domain/validate.test.ts)、[EPUB](../../src/epub/builder.test.ts)、[Cookie](../../src/cli/cookie.test.ts)
+- [完整性](../../src/domain/validate.test.ts)、[EPUB](../../src/epub/builder.test.ts)、[账号登录](../../src/auth/login.test.ts)、[会话持久化](../../src/auth/session.test.ts)、[浏览器验证](../../src/auth/browser.test.ts)
+
+浏览器集成测试使用真实无界面 Chromium 和模拟站点页面，需预先安装浏览器；不依赖真实站点账号。真实站点登录及交接的运行证据与未验证范围记录在对应 Change 中。
 
 此文档只维护**已实现的高层架构结果**。若实现改变了模块职责、持久化数据契约或重要行为边界，应更新受影响章节；具体的历史架构取舍另通过 ADR 保存，不在此重复其理由。
-

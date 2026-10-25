@@ -1,6 +1,10 @@
 import path from 'node:path';
 import type { Asset, Book, Chapter, Volume } from '../domain/book.js';
-import { CopyrightUnavailableError, IncompleteBookError } from '../domain/errors.js';
+import {
+  CopyrightUnavailableError,
+  IncompleteBookError,
+  isAuthenticationError,
+} from '../domain/errors.js';
 import { sha256 } from '../domain/ids.js';
 import { EpubBuilder } from '../epub/builder.js';
 import { ImageStore } from '../assets/image-store.js';
@@ -110,7 +114,7 @@ export class Downloader {
               sourceUrl: task.chapter.sourceUrl,
             });
           } catch (error) {
-            if (error instanceof CopyrightUnavailableError) {
+            if (error instanceof CopyrightUnavailableError || isAuthenticationError(error)) {
               emit({
                 phase: 'chapters',
                 kind: 'failed',
@@ -162,7 +166,8 @@ export class Downloader {
     if (chapterFailures.length > 0) {
       throw new IncompleteBookError(
         chapterFailures.map(
-          ({ task, error }) => `${task.volume.title} / ${task.chapter.title}: ${errorMessage(error)}`,
+          ({ task, error }) =>
+            `${task.volume.title} / ${task.chapter.title}: ${errorMessage(error)}`,
         ),
       );
     }
@@ -195,7 +200,8 @@ export class Downloader {
       [...assets.entries()].map(async ([url, task]) => {
         try {
           acquired.set(url, await task);
-        } catch {
+        } catch (error) {
+          if (isAuthenticationError(error)) throw error;
           // Missing assets remain unresolved and are reported by the completeness validator.
         } finally {
           completedImages += 1;
@@ -348,7 +354,10 @@ export class Downloader {
     const rawPath = `raw/chapters/${chapter.id}.html`;
     const existing = workspace.resource(key);
     if (existing?.state === 'complete' && (await workspace.exists(jsonPath))) {
-      if ((await workspace.exists(rawPath)) && isCopyrightUnavailable(await workspace.readText(rawPath))) {
+      if (
+        (await workspace.exists(rawPath)) &&
+        isCopyrightUnavailable(await workspace.readText(rawPath))
+      ) {
         throw new CopyrightUnavailableError(chapter.title, chapter.sourceUrl);
       }
       return workspace.readJson<Chapter>(jsonPath);

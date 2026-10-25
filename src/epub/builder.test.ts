@@ -8,11 +8,13 @@ import { describe, expect, it } from 'vitest';
 import type { Book } from '../domain/book.js';
 import { sha256 } from '../domain/ids.js';
 import { EpubBuilder } from './builder.js';
+import { renderNavigation } from './render.js';
 
 const execFileAsync = promisify(execFile);
+const timeout = process.env.CI_EPUBCHECK === '1' ? 30_000 : 5_000;
 
 describe('EpubBuilder', () => {
-  it('builds an EPUB with the uncompressed mimetype entry first', async () => {
+  it('builds an EPUB with uncompressed mimetype first', { timeout }, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-epub-'));
     const image = await sharp({
       create: { width: 8, height: 8, channels: 3, background: '#ffffff' },
@@ -71,6 +73,12 @@ describe('EpubBuilder', () => {
     const output = path.join(root, 'book.epub');
     await new EpubBuilder().build(book, root, output);
     const zip = await readFile(output);
+    expect(
+      await readFile(path.join(root, 'epub', 'package', 'EPUB', 'nav.xhtml'), 'utf8'),
+    ).toContain('href="cover.xhtml"');
+    expect(renderNavigation({ ...book, assets: [] }, new Map())).not.toContain(
+      'href="cover.xhtml"',
+    );
     expect(zip.readUInt32LE(0)).toBe(0x04034b50);
     expect(zip.readUInt16LE(8)).toBe(0);
     const filenameLength = zip.readUInt16LE(26);
