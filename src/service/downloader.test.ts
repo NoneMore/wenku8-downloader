@@ -15,7 +15,7 @@ import {
 import { EpubBuilder } from '../epub/builder.js';
 import { manifestSchema } from '../storage/schema.js';
 import { Downloader, type ProgressEvent } from './downloader.js';
-import { ProxyAuthenticationError, ProxyConfigurationError } from '../http/proxy.js';
+import { NonRetryableHttpError } from '../domain/errors.js';
 
 describe('Downloader', () => {
   for (const preferCurl of [false, true]) {
@@ -84,8 +84,7 @@ describe('Downloader', () => {
 
   it.each([
     new CloudflareChallengeError('https://www.wenku8.net/cover.jpg'),
-    new ProxyAuthenticationError(),
-    new ProxyConfigurationError('http_proxy：仅支持 HTTP 代理'),
+    new NonRetryableHttpError('HTTP 请求无法恢复'),
   ])('propagates image authentication and proxy blocks even when missing images are allowed: %s', async (blocked) => {
     const client = new Wenku8Client();
     const raw =
@@ -111,8 +110,7 @@ describe('Downloader', () => {
   for (const blocked of [
     new AuthenticationRequiredError(),
     new CloudflareChallengeError('https://www.wenku8.net/novel/42/2.htm'),
-    new ProxyAuthenticationError(),
-    new ProxyConfigurationError('https_proxy：仅支持 HTTP 代理'),
+    new NonRetryableHttpError('HTTP 请求无法恢复'),
   ]) {
     it('stops on authentication or proxy failure and reuses completed chapters after recovery', async () => {
       const client = new Wenku8Client();

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Wenku8Client } from './client.js';
 import { AuthenticationRequiredError, CloudflareChallengeError } from '../domain/errors.js';
-import { ProxyAuthenticationError, ProxyConfigurationError } from '../http/proxy.js';
+import { NonRetryableHttpError } from '../domain/errors.js';
 
 describe('Wenku8Client authentication failures', () => {
   const chapter = {
@@ -12,7 +12,7 @@ describe('Wenku8Client authentication failures', () => {
     blocks: [],
   };
 
-  it.each([new ProxyAuthenticationError(), new ProxyConfigurationError('https_proxy：仅支持 HTTP 代理')])(
+  it.each([new NonRetryableHttpError('HTTP 请求无法恢复')])(
     'propagates proxy errors from packed content without trying other URLs: %s',
     async (blocked) => {
       const client = new Wenku8Client();

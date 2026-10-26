@@ -10,12 +10,12 @@ import {
   parseSugoiResults,
 } from './parser.js';
 import { HttpClient, type HttpClientOptions } from '../http/client.js';
-import { isProxyError } from '../http/proxy.js';
 import {
   AuthenticationRequiredError,
   CloudflareChallengeError,
   CopyrightUnavailableError,
   isAuthenticationError,
+  NonRetryableHttpError,
 } from '../domain/errors.js';
 import { isChallengePage, isLoginRequired } from './auth.js';
 
@@ -127,7 +127,7 @@ export class Wenku8Client {
       try {
         return parsePackedChapter(await this.siteText(url, encoding, signal), chapter);
       } catch (error) {
-        if (isAuthenticationError(error) || isProxyError(error)) throw error;
+        if (isAuthenticationError(error) || error instanceof NonRetryableHttpError) throw error;
         lastError = error;
       }
     }

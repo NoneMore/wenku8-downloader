@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { CookieJar } from 'tough-cookie';
 import { HttpClient } from '../http/client.js';
-import { CloudflareChallengeError, HttpStatusError } from '../domain/errors.js';
+import {
+  CloudflareChallengeError,
+  HttpStatusError,
+  NonRetryableHttpError,
+} from '../domain/errors.js';
 import {
   ACCOUNT_URL,
   LOGIN_URL,
@@ -13,7 +17,7 @@ import {
   parseLoginForm,
 } from '../site/auth.js';
 import type { AccountSession } from './session.js';
-import { isProxyError, type ProxyOptions } from '../http/proxy.js';
+import type { ProxyOptions } from '../http/proxy.js';
 
 export const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
@@ -65,8 +69,6 @@ export async function loginAccount(
     }
   } catch (error) {
     if (!(error instanceof CloudflareChallengeError)) throw error;
-  } finally {
-    await http.close();
   }
   options.signal?.throwIfAborted();
   options.onBrowserRequired?.();
@@ -86,7 +88,7 @@ export async function verifySession(http: HttpClient, signal?: AbortSignal): Pro
 }
 
 export function verificationFailure(error: unknown): string {
-  if (isProxyError(error)) return error.message;
+  if (error instanceof NonRetryableHttpError) return error.message;
   if (error instanceof CloudflareChallengeError) return 'Cloudflare 仍拦截 CLI 请求';
   if (error instanceof HttpStatusError) return `账号页面返回 HTTP ${error.status}`;
   if (error instanceof Error && error.message.startsWith('账号页面仍要求登录'))

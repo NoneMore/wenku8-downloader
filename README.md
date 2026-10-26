@@ -137,52 +137,29 @@ new    新书一览       sort=postdate
 
 ## HTTP 代理
 
-登录、浏览器验证和全部下载请求支持无需认证的 HTTP 代理；默认自动继承启动进程的环境变量。
-
-PowerShell：
+默认继承 `http_proxy`、`https_proxy`、`all_proxy`、`no_proxy` 等常见环境变量。首版支持无需认证的 HTTP 代理，HTTPS 连接仍验证目标证书：
 
 ```powershell
-$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
-$env:HTTP_PROXY = 'http://127.0.0.1:7890'
-$env:NO_PROXY = 'localhost,127.0.0.1,::1'
+$env:https_proxy = 'http://127.0.0.1:7890'
+$env:http_proxy = 'http://127.0.0.1:7890'
 wenku8 login
+```
+
+```sh
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
 wenku8 download 1973
 ```
 
-POSIX shell：
+也可用全局选项覆盖：`wenku8 --proxy http://127.0.0.1:7890 download 1973` 强制指定代理，忽略环境绕过列表；`wenku8 --no-proxy info 1973` 强制直连。两个选项互斥，可放在子命令前后，也适用于交互模式。
 
-```sh
-export HTTPS_PROXY=http://127.0.0.1:7890
-export HTTP_PROXY=http://127.0.0.1:7890
-export NO_PROXY=localhost,127.0.0.1,::1
-wenku8 login
-wenku8 download 1973
-```
+Node 的环境变量和常见绕过规则由 `proxy-from-env` 处理，并补足 IP 目标的有效 CIDR 排除；未使用的绕过条目不会令请求失败。curl 保留原生环境和用户配置；区分大小写的系统需使用 `http_proxy`，curl 不接受大写 `HTTP_PROXY`。
 
-`HTTPS_PROXY=http://127.0.0.1:7890` 表示访问 HTTPS 目标时使用该 HTTP 代理，HTTPS 连接仍验证目标证书。
+浏览器按 HTTPS 登录页选定一次代理或直连，使用代理时由 Chromium 处理绕过列表。复杂绕过语法和子资源代理选择不保证三套传输完全一致，需要全部直连时使用 `--no-proxy`。
 
-| 配置            | 行为                                                                                                          |
-| --------------- | ------------------------------------------------------------------------------------------------------------- |
-| `--proxy <url>` | 本次全部使用指定代理，忽略环境代理与 `NO_PROXY`                                                               |
-| `--no-proxy`    | 本次全部直连，忽略环境代理与系统代理                                                                          |
-| 未传选项        | 按目标协议读取 `HTTP_PROXY` / `HTTPS_PROXY`，缺失时使用 `ALL_PROXY`，命中 `NO_PROXY` 时直连，否则无配置即直连 |
+代理失败不会自动改为直连，配置不写入登录态或工作区；改变出口可能需要重新登录。不承诺代理认证、HTTPS 代理服务器、SOCKS、PAC 或系统代理发现。
 
-所有变量也支持小写名称；同名变量的大小写值同时存在时，非空小写值优先，空白值按未设置处理。`HTTP_PROXY` 不作为 HTTPS 目标的兜底。代理配置只作用于本次运行，不写入登录态或工作区。全局选项可放在子命令前后，也适用于交互模式：
-
-```sh
-wenku8 --proxy http://127.0.0.1:7890 login
-wenku8 download 1973 --proxy http://127.0.0.1:7890
-wenku8 --proxy http://127.0.0.1:7890
-wenku8 --no-proxy info 1973
-```
-
-`--proxy` 和 `--no-proxy` 不能同时使用。代理失败会报告错误，不自动改为直连。改变网络出口后，站点可能要求重新登录或验证。
-
-`NO_PROXY` 是逗号分隔的列表，支持域名及其子域名、精确 IPv4 / IPv6（IPv6 不带方括号）以及独立的 `*`。例如 `example.test` 或 `.example.test` 均匹配本域及 `a.example.test`，不匹配 `notexample.test`；匹配忽略域名大小写、覆盖所有端口，不通过 DNS 将域名与 IP 相互匹配。空条目忽略；`*` 全部直连。localhost 和回环地址需要显式列入列表才会绕过代理。暂不支持端口限定、CIDR 网段和 `*.example.test` 等模式；自动模式遇到这些条目会明确报错。
-
-本版只接受 `http://host[:port]`，省略端口使用 80；不支持代理认证、`https://` 代理服务器、SOCKS、PAC 或自动发现系统代理。纯离线命令及帮助、版本输出不受无效代理环境变量影响。
-
-库调用可通过 `new Wenku8Client({ proxy: 'http://127.0.0.1:7890' })` 指定代理，`proxy: false` 强制直连，省略 `proxy` 自动继承环境。需要显式结束客户端连接时调用 `await client.http.close()`。
+库调用可通过 `new Wenku8Client({ proxy: 'http://127.0.0.1:7890' })` 指定代理，`proxy: false` 强制直连，省略则继承环境；连接由 HTTP 层自行释放。
 
 ## 登录态
 

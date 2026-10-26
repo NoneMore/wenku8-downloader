@@ -11,6 +11,7 @@ const credentials = { username: '测试', password: 'synthetic-test-password' };
 const contexts: BrowserContext[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(
     contexts.splice(0).map(async (context) => {
       await context.close().catch(() => undefined);
@@ -51,6 +52,32 @@ function form(extra = '') {
 }
 
 describe('browser authentication', () => {
+  it.each([false, 'http://127.0.0.1:7890', undefined] as const)(
+    'passes the selected native proxy settings to browser startup (%s)',
+    async (proxy) => {
+      vi.stubEnv('https_proxy', 'http://environment.test:7890');
+      vi.stubEnv('no_proxy', 'localhost');
+      const createContext = vi
+        .fn<
+          (
+            signal: AbortSignal,
+            settings: { server: string; bypass: string },
+          ) => Promise<BrowserContext>
+        >()
+        .mockRejectedValue(new Error('fixture stops before launch'));
+      await expect(
+        loginInBrowser(credentials, new CookieJar(), {
+          ...(proxy === undefined ? {} : { proxy }),
+          createContext,
+        }),
+      ).rejects.toThrow('浏览器登录未完成');
+      expect(createContext.mock.calls[0]?.[1]).toEqual({
+        server: proxy === false ? 'direct://' : (proxy ?? 'http://environment.test:7890'),
+        bypass: proxy === undefined ? 'localhost' : '<-loopback>',
+      });
+    },
+  );
+
   it('does not start a browser for a pre-cancelled login', async () => {
     const controller = new AbortController();
     controller.abort();
@@ -65,22 +92,14 @@ describe('browser authentication', () => {
     const { context } = await contextFor(form());
     const controller = new AbortController();
     let finishStartup!: (context: BrowserContext) => void;
-    let startupBegan!: () => void;
-    const began = new Promise<void>((resolve) => {
-      startupBegan = resolve;
-    });
     const startup = new Promise<BrowserContext>((resolve) => {
       finishStartup = resolve;
     });
     const result = loginInBrowser(credentials, new CookieJar(), {
       signal: controller.signal,
-      createContext: () => {
-        startupBegan();
-        return startup;
-      },
+      createContext: () => startup,
     });
     const rejection = expect(result).rejects.toThrow('登录已取消');
-    await began;
     controller.abort();
     finishStartup(context);
     await rejection;

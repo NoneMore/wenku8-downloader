@@ -29,7 +29,7 @@ import {
   formatHttpRetry,
 } from './cli/ui.js';
 import type { HttpRetryEvent } from './http/client.js';
-import { ProxyPolicy, type ProxyOptions } from './http/proxy.js';
+import { validateProxy, type ProxyOptions } from './http/proxy.js';
 
 const VERSION = '5.1.0';
 const BACK = '__back__';
@@ -63,7 +63,8 @@ program
   })
   .hook('preAction', () => {
     if (proxySpecified && directSpecified) throw new Error('--proxy 与 --no-proxy 不能同时使用');
-    new ProxyPolicy(networkOptions().proxy);
+    const proxy = networkOptions().proxy;
+    if (typeof proxy === 'string') validateProxy(proxy);
   });
 
 function networkOptions(): ProxyOptions {
