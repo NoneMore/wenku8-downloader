@@ -24,9 +24,14 @@ import {
   type LoginOptions,
 } from './login.js';
 import type { AccountSession } from './session.js';
+import { resolveProxy } from '../http/proxy.js';
+import { NonRetryableHttpError } from '../domain/errors.js';
 
 interface BrowserLoginOptions extends LoginOptions {
-  createContext?: (signal: AbortSignal) => Promise<BrowserContext>;
+  createContext?: (
+    signal: AbortSignal,
+    proxy: { server: string; bypass: string },
+  ) => Promise<BrowserContext>;
 }
 
 class BrowserLoginError extends Error {}
@@ -50,7 +55,12 @@ export async function loginInBrowser(
   let phase = '初始化浏览器';
   try {
     signal.throwIfAborted();
-    context = await (options.createContext ?? openLoginContext)(signal);
+    const server = resolveProxy(LOGIN_URL, options.proxy) || 'direct://';
+    const bypass =
+      options.proxy === undefined
+        ? process.env.no_proxy || process.env.NO_PROXY || ''
+        : '<-loopback>';
+    context = await (options.createContext ?? openLoginContext)(signal, { server, bypass });
     browser = context.browser();
     signal.throwIfAborted();
     context.setDefaultTimeout(5_000);
@@ -120,6 +130,7 @@ export async function loginInBrowser(
         for (const preferCurl of [true, false]) {
           const cookieJar = await snapshot.clone();
           const http = new HttpClient({
+            ...(options.proxy !== undefined ? { proxy: options.proxy } : {}),
             cookieJar,
             userAgent,
             preferCurl,
@@ -131,6 +142,7 @@ export async function loginInBrowser(
             return { id: randomUUID(), userAgent, transport: http.getTransport(), cookieJar };
           } catch (error) {
             signal.throwIfAborted();
+            if (error instanceof NonRetryableHttpError) throw error;
             failures.push(`${preferCurl ? 'curl' : 'Node'}：${verificationFailure(error)}`);
           }
         }
@@ -164,6 +176,7 @@ export async function loginInBrowser(
           ? '浏览器登录等待超过 5 分钟，请重新运行 `wenku8 login`'
           : '登录已取消',
       );
+    if (error instanceof NonRetryableHttpError) throw error;
     // Playwright call logs can contain filled passwords or rendered page content.
     if (error instanceof BrowserLoginError) throw error;
     const category =
@@ -176,13 +189,17 @@ export async function loginInBrowser(
   }
 }
 
-async function openLoginContext(signal: AbortSignal): Promise<BrowserContext> {
+async function openLoginContext(
+  signal: AbortSignal,
+  proxy: { server: string; bypass: string },
+): Promise<BrowserContext> {
   let browser: Browser | undefined;
   for (const channel of ['chrome', 'msedge', undefined]) {
     signal.throwIfAborted();
     try {
       browser = await chromium.launch({
         headless: false,
+        proxy,
         ...(channel ? { channel } : {}),
         timeout: 15_000,
       });

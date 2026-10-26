@@ -11,6 +11,7 @@ const credentials = { username: '测试', password: 'synthetic-test-password' };
 const contexts: BrowserContext[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(
     contexts.splice(0).map(async (context) => {
       await context.close().catch(() => undefined);
@@ -51,6 +52,32 @@ function form(extra = '') {
 }
 
 describe('browser authentication', () => {
+  it.each([false, 'http://127.0.0.1:7890', undefined] as const)(
+    'passes the selected native proxy settings to browser startup (%s)',
+    async (proxy) => {
+      vi.stubEnv('https_proxy', 'http://environment.test:7890');
+      vi.stubEnv('no_proxy', 'localhost');
+      const createContext = vi
+        .fn<
+          (
+            signal: AbortSignal,
+            settings: { server: string; bypass: string },
+          ) => Promise<BrowserContext>
+        >()
+        .mockRejectedValue(new Error('fixture stops before launch'));
+      await expect(
+        loginInBrowser(credentials, new CookieJar(), {
+          ...(proxy === undefined ? {} : { proxy }),
+          createContext,
+        }),
+      ).rejects.toThrow('浏览器登录未完成');
+      expect(createContext.mock.calls[0]?.[1]).toEqual({
+        server: proxy === false ? 'direct://' : (proxy ?? 'http://environment.test:7890'),
+        bypass: proxy === undefined ? 'localhost' : '<-loopback>',
+      });
+    },
+  );
+
   it('does not start a browser for a pre-cancelled login', async () => {
     const controller = new AbortController();
     controller.abort();

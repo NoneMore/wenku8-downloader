@@ -2,12 +2,18 @@ import { spawn } from 'node:child_process';
 import PQueue from 'p-queue';
 import pRetry, { AbortError } from 'p-retry';
 import { CookieJar } from 'tough-cookie';
-import { CloudflareChallengeError, HttpStatusError } from '../domain/errors.js';
+import { Agent, ProxyAgent } from 'undici';
+import {
+  CloudflareChallengeError,
+  HttpStatusError,
+  NonRetryableHttpError,
+} from '../domain/errors.js';
+import { resolveProxy, validateProxy, type ProxyOptions } from './proxy.js';
 
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-export interface HttpClientOptions {
+export interface HttpClientOptions extends ProxyOptions {
   concurrency?: number;
   timeoutMs?: number;
   retries?: number;
@@ -68,6 +74,7 @@ export class HttpClient {
   private readonly onRetry: ((event: HttpRetryEvent) => void) | undefined;
   private readonly rateLimitUntil = new Map<string, number>();
   private useCurlTransport = false;
+  private readonly proxy: string | false | undefined;
   private readonly requestStats: HttpClientStats = {
     fetchRequests: 0,
     curlRequests: 0,
@@ -82,6 +89,7 @@ export class HttpClient {
   };
 
   constructor(options: HttpClientOptions = {}) {
+    this.proxy = typeof options.proxy === 'string' ? validateProxy(options.proxy) : options.proxy;
     this.queue = new PQueue({
       concurrency: options.concurrency ?? 3,
       intervalCap: options.requestsPerSecond ?? 1,
@@ -161,9 +169,14 @@ export class HttpClient {
         maxTimeout: 10_000,
         factor: 2,
         randomize: true,
-        shouldRetry: ({ error }) => !(error instanceof CloudflareChallengeError),
+        shouldRetry: ({ error }) =>
+          !(error instanceof CloudflareChallengeError || error instanceof NonRetryableHttpError),
         onFailedAttempt: ({ error, attemptNumber, retriesLeft, retriesConsumed }) => {
-          if (retriesLeft > 0 && !(error instanceof CloudflareChallengeError)) {
+          if (
+            retriesLeft > 0 &&
+            !(error instanceof CloudflareChallengeError) &&
+            !(error instanceof NonRetryableHttpError)
+          ) {
             this.requestStats.automaticRetries += 1;
             this.onRetry?.({
               url,
@@ -215,6 +228,8 @@ export class HttpClient {
       }
       const status = output.response.status;
       this.recordStatus(status);
+      if (status === 407)
+        throw new NonRetryableHttpError('代理要求认证（HTTP 407），请使用无需认证的代理');
       if ([301, 302, 303, 307, 308].includes(status)) {
         const location = output.response.headers.get('location');
         if (!location) throw new AbortError('站点重定向缺少目标地址');
@@ -268,14 +283,35 @@ export class HttpClient {
   ): Promise<{ data: Uint8Array; response: Response }> {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combinedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const proxy = resolveProxy(url, this.proxy);
+    const dispatcher = proxy
+      ? new ProxyAgent({ uri: proxy, proxyTunnel: false, connectTimeout: this.timeoutMs })
+      : proxy === false
+        ? new Agent()
+        : undefined;
     this.requestStats.fetchRequests += 1;
-    const response = await fetch(url, {
-      ...init,
-      headers,
-      redirect: 'manual',
-      signal: combinedSignal,
-    });
-    return { data: new Uint8Array(await response.arrayBuffer()), response };
+    try {
+      const requestOptions = {
+        ...init,
+        headers,
+        redirect: 'manual' as const,
+        signal: combinedSignal,
+        ...(dispatcher ? { dispatcher } : {}),
+      };
+      const response = await fetch(url, requestOptions);
+      return { data: new Uint8Array(await response.arrayBuffer()), response };
+    } catch (error) {
+      if (signal?.aborted) throw new AbortError(abortReason(signal));
+      if (proxy)
+        throw new NonRetryableHttpError(
+          timeout.aborted
+            ? '代理请求超时，请检查代理连接'
+            : '代理请求失败，请检查代理连接、认证设置及目标证书',
+        );
+      throw error;
+    } finally {
+      await dispatcher?.destroy();
+    }
   }
 
   private async curlBytes(
@@ -288,6 +324,7 @@ export class HttpClient {
       timeoutMs: this.timeoutMs,
       userAgent: this.userAgent,
       headers,
+      proxy: this.proxy,
       ...init,
     };
     if (signal) curlOptions.signal = signal;
@@ -411,19 +448,36 @@ async function runCurl(
   }).finally(() => options.signal?.removeEventListener('abort', abort));
 
   if (options.signal?.aborted) throw new AbortError(abortReason(options.signal));
+  const buffer = Buffer.concat(stdout);
+  const markerIndex = buffer.lastIndexOf(marker);
+  const [statusText, connectStatus, proxyUsed] = buffer
+    .subarray(markerIndex + marker.length)
+    .toString('utf8')
+    .trim()
+    .split(';');
+  if (markerIndex >= 0 && (statusText === '407' || connectStatus === '407'))
+    throw new NonRetryableHttpError('代理要求认证（HTTP 407），请使用无需认证的代理');
+  // Let curl account for its own environment, user config and NO_PROXY rules.
+  // Older curl can still classify an explicit proxy, but cannot report proxy_used.
+  const connectionFailure =
+    (exitCode === 7 || exitCode === 28) && statusText === '000' && connectStatus === '000';
+  if (
+    exitCode === 5 ||
+    (connectionFailure && (proxyUsed === '1' || typeof options.proxy === 'string'))
+  )
+    throw new NonRetryableHttpError(
+      exitCode === 28
+        ? '代理请求超时（curl 退出码 28）'
+        : `无法连接代理（curl 退出码 ${exitCode}）`,
+    );
+  if (connectionFailure && options.proxy === undefined && proxyUsed !== '0' && proxyUsed !== '1')
+    throw new NonRetryableHttpError('curl 无法报告代理使用状态，请升级至 8.7 或更高版本后重试');
   if (exitCode !== 0) {
     throw new Error(`curl 请求失败（退出码 ${exitCode ?? '未知'}）`);
   }
 
-  const buffer = Buffer.concat(stdout);
-  const markerIndex = buffer.lastIndexOf(marker);
   if (markerIndex < 0) throw new Error('curl 响应缺少 HTTP 状态码');
-  const status = Number(
-    buffer
-      .subarray(markerIndex + marker.length)
-      .toString('utf8')
-      .trim(),
-  );
+  const status = Number(statusText);
   if (!Number.isInteger(status)) throw new Error('curl 响应状态码无效');
   let start = 0;
   let headers = new Headers();
@@ -451,6 +505,9 @@ function curlConfig(url: string, options: CurlOptions, marker: string): string {
     'include',
     'suppress-connect-headers',
     'compressed',
+    ...(options.proxy === undefined
+      ? []
+      : [`proxy = "${escapeCurlConfig(options.proxy || '')}"`, 'noproxy = ""']),
     `connect-timeout = "${Math.ceil(options.timeoutMs / 1000)}"`,
     `max-time = "${Math.ceil(options.timeoutMs / 1000)}"`,
     `url = "${escapeCurlConfig(url)}"`,
@@ -462,12 +519,13 @@ function curlConfig(url: string, options: CurlOptions, marker: string): string {
     ...(options.method
       ? [`request = "POST"`, `data-raw = "${escapeCurlConfig(options.body ?? '')}"`]
       : []),
-    `write-out = "${escapeCurlConfig(`${marker}%{http_code}`)}"`,
+    `write-out = "${escapeCurlConfig(`${marker}%{http_code};%{http_connect};%{proxy_used}`)}"`,
     '',
   ].join('\n');
 }
 
 interface CurlOptions {
+  proxy: string | false | undefined;
   timeoutMs: number;
   headers: Headers;
   method?: 'POST';

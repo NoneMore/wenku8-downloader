@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { CookieJar } from 'tough-cookie';
 import { HttpClient } from '../http/client.js';
-import { CloudflareChallengeError, HttpStatusError } from '../domain/errors.js';
+import {
+  CloudflareChallengeError,
+  HttpStatusError,
+  NonRetryableHttpError,
+} from '../domain/errors.js';
 import {
   ACCOUNT_URL,
   LOGIN_URL,
@@ -13,6 +17,7 @@ import {
   parseLoginForm,
 } from '../site/auth.js';
 import type { AccountSession } from './session.js';
+import type { ProxyOptions } from '../http/proxy.js';
 
 export const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
@@ -21,7 +26,7 @@ export interface Credentials {
   password: string;
 }
 
-export interface LoginOptions {
+export interface LoginOptions extends ProxyOptions {
   signal?: AbortSignal;
   onBrowserRequired?: () => void;
 }
@@ -33,6 +38,7 @@ export async function loginAccount(
   if (!credentials.username.trim() || !credentials.password) throw new Error('账号和密码不能为空');
   const cookieJar = new CookieJar();
   const http = new HttpClient({
+    ...options,
     cookieJar,
     preferCurl: false,
     allowCurlFallback: false,
@@ -82,6 +88,7 @@ export async function verifySession(http: HttpClient, signal?: AbortSignal): Pro
 }
 
 export function verificationFailure(error: unknown): string {
+  if (error instanceof NonRetryableHttpError) return error.message;
   if (error instanceof CloudflareChallengeError) return 'Cloudflare 仍拦截 CLI 请求';
   if (error instanceof HttpStatusError) return `账号页面返回 HTTP ${error.status}`;
   if (error instanceof Error && error.message.startsWith('账号页面仍要求登录'))

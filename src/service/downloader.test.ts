@@ -15,6 +15,7 @@ import {
 import { EpubBuilder } from '../epub/builder.js';
 import { manifestSchema } from '../storage/schema.js';
 import { Downloader, type ProgressEvent } from './downloader.js';
+import { NonRetryableHttpError } from '../domain/errors.js';
 
 describe('Downloader', () => {
   for (const preferCurl of [false, true]) {
@@ -81,34 +82,74 @@ describe('Downloader', () => {
     }
   }
 
-  it('propagates a definite image authentication block even when missing images are allowed', async () => {
-    const client = new Wenku8Client();
+  it.each([
+    new CloudflareChallengeError('https://www.wenku8.net/cover.jpg'),
+    new NonRetryableHttpError('HTTP 请求无法恢复'),
+    'unreachable curl proxy',
+    'unreachable curl environment proxy',
+    'hanging curl proxy',
+  ])('propagates image authentication and proxy blocks even when missing images are allowed: %s', async (blocked) => {
+    const environmentProxy = blocked === 'unreachable curl environment proxy';
+    const hangingProxy = blocked === 'hanging curl proxy';
+    let proxyUrl = 'http://127.0.0.1:1';
+    let proxyRequests = 0;
+    if (hangingProxy) {
+      const server = createServer(() => {
+        proxyRequests += 1;
+      });
+      servers.push(server);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Test proxy did not bind');
+      proxyUrl = `http://127.0.0.1:${address.port}`;
+    }
+    if (environmentProxy) {
+      vi.stubEnv('http_proxy', 'http://127.0.0.1:1');
+      vi.stubEnv('no_proxy', '');
+      vi.stubEnv('NO_PROXY', '');
+    }
+    const client = new Wenku8Client(
+      typeof blocked === 'string'
+        ? {
+            preferCurl: true,
+            retries: hangingProxy ? 2 : 0,
+            timeoutMs: 100,
+            minDelayMs: 1,
+            ...(environmentProxy ? {} : { proxy: proxyUrl }),
+          }
+        : {},
+    );
     const raw =
       '<div id="content"><span><b>封面认证测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
     const book = parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm');
-    book.coverSourceUrl = 'https://www.wenku8.net/cover.jpg';
+    book.coverSourceUrl = `${environmentProxy || hangingProxy ? 'http' : 'https'}://www.wenku8.net/cover.jpg`;
     vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
     vi.spyOn(client, 'getCatalogue').mockResolvedValue({ raw: '<table></table>', volumes: [] });
-    const blocked = new CloudflareChallengeError(book.coverSourceUrl);
-    vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
+    if (typeof blocked !== 'string') vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
     const builder = new EpubBuilder();
     const build = vi.spyOn(builder, 'build');
     const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-image-auth-'));
-    await expect(
-      new Downloader(client, builder).download(42, {
-        workDirectory: root,
-        outputDirectory: root,
-        allowMissingImages: true,
-      }),
-    ).rejects.toBe(blocked);
+    const download = new Downloader(client, builder).download(42, {
+      workDirectory: root,
+      outputDirectory: root,
+      allowMissingImages: true,
+    });
+    if (typeof blocked === 'string')
+      await expect(download).rejects.toBeInstanceOf(NonRetryableHttpError);
+    else await expect(download).rejects.toBe(blocked);
     expect(build).not.toHaveBeenCalled();
+    if (hangingProxy) {
+      expect(proxyRequests).toBe(1);
+      expect(client.http.stats().automaticRetries).toBe(0);
+    }
   });
 
   for (const blocked of [
     new AuthenticationRequiredError(),
     new CloudflareChallengeError('https://www.wenku8.net/novel/42/2.htm'),
+    new NonRetryableHttpError('HTTP 请求无法恢复'),
   ]) {
-    it('stops on authentication failure and reuses completed chapters after a fresh login', async () => {
+    it('stops on authentication or proxy failure and reuses completed chapters after recovery', async () => {
       const client = new Wenku8Client();
       const catalogueUrl = 'https://www.wenku8.net/novel/42/index.htm';
       const raw =
@@ -166,6 +207,7 @@ describe('Downloader', () => {
   const servers: ReturnType<typeof createServer>[] = [];
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await Promise.all(
       servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     );

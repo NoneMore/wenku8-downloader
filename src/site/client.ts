@@ -15,6 +15,7 @@ import {
   CloudflareChallengeError,
   CopyrightUnavailableError,
   isAuthenticationError,
+  NonRetryableHttpError,
 } from '../domain/errors.js';
 import { isChallengePage, isLoginRequired } from './auth.js';
 
@@ -126,7 +127,7 @@ export class Wenku8Client {
       try {
         return parsePackedChapter(await this.siteText(url, encoding, signal), chapter);
       } catch (error) {
-        if (isAuthenticationError(error)) throw error;
+        if (isAuthenticationError(error) || error instanceof NonRetryableHttpError) throw error;
         lastError = error;
       }
     }

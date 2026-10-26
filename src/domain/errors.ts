@@ -39,6 +39,12 @@ export class HttpStatusError extends Wenku8Error {
   }
 }
 
+export class NonRetryableHttpError extends Wenku8Error {
+  constructor(message: string) {
+    super(message, 'HTTP_NON_RETRYABLE');
+  }
+}
+
 export class CloudflareChallengeError extends Wenku8Error {
   constructor(readonly url: string) {
     super(

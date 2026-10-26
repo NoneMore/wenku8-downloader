@@ -4,6 +4,7 @@ import {
   CopyrightUnavailableError,
   IncompleteBookError,
   isAuthenticationError,
+  NonRetryableHttpError,
 } from '../domain/errors.js';
 import { sha256 } from '../domain/ids.js';
 import { EpubBuilder } from '../epub/builder.js';
@@ -119,7 +120,7 @@ export class Downloader {
               sourceUrl: task.chapter.sourceUrl,
             });
           } catch (error) {
-            if (error instanceof CopyrightUnavailableError || isAuthenticationError(error)) {
+            if (error instanceof CopyrightUnavailableError || isAuthenticationError(error) || error instanceof NonRetryableHttpError) {
               emit({
                 phase: 'chapters',
                 kind: 'failed',
@@ -211,7 +212,7 @@ export class Downloader {
         try {
           acquired.set(url, await task);
         } catch (error) {
-          if (isAuthenticationError(error)) throw error;
+          if (isAuthenticationError(error) || error instanceof NonRetryableHttpError) throw error;
           // Missing assets remain unresolved and are reported by the completeness validator.
         } finally {
           completedImages += 1;

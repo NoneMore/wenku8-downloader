@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Wenku8Client } from './client.js';
 import { AuthenticationRequiredError, CloudflareChallengeError } from '../domain/errors.js';
+import { NonRetryableHttpError } from '../domain/errors.js';
 
 describe('Wenku8Client authentication failures', () => {
   const chapter = {
@@ -10,6 +11,18 @@ describe('Wenku8Client authentication failures', () => {
     sourceUrl: 'https://www.wenku8.net/novel/1/42/1.htm',
     blocks: [],
   };
+
+  it.each([new NonRetryableHttpError('HTTP 请求无法恢复')])(
+    'propagates proxy errors from packed content without trying other URLs: %s',
+    async (blocked) => {
+      const client = new Wenku8Client();
+      const request = vi.spyOn(client.http, 'text')
+        .mockResolvedValueOnce('<span>null</span>')
+        .mockRejectedValue(blocked);
+      await expect(client.getChapter(chapter)).rejects.toBe(blocked);
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('rejects structural HTTP-200 challenge pages before parsing search or chapter content', async () => {
     const client = new Wenku8Client();

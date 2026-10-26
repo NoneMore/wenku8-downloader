@@ -135,6 +135,34 @@ good   最受关注       sort=goodnum
 new    新书一览       sort=postdate
 ```
 
+## HTTP 代理
+
+默认继承 `http_proxy`、`https_proxy`、`all_proxy`、`no_proxy` 等常见环境变量。首版支持无需认证的 HTTP 代理，HTTPS 连接仍验证目标证书：
+
+```powershell
+$env:https_proxy = 'http://127.0.0.1:7890'
+$env:http_proxy = 'http://127.0.0.1:7890'
+wenku8 login
+```
+
+```sh
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+wenku8 download 1973
+```
+
+也可用全局选项覆盖：`wenku8 --proxy http://127.0.0.1:7890 download 1973` 强制指定代理，忽略环境绕过列表；`wenku8 --no-proxy info 1973` 强制直连。两个选项互斥，可放在子命令前后，也适用于交互模式。
+
+Node 的环境变量和常见绕过规则由 `proxy-from-env` 处理，并补足 IP 目标的有效 CIDR 排除；未使用的绕过条目不会令请求失败。curl 保留原生环境和用户配置；区分大小写的系统需使用 `http_proxy`，curl 不接受大写 `HTTP_PROXY`。
+
+curl 8.7 起可[报告实际是否使用代理](https://curl.se/docs/manpage.html#proxy_used)，以区分代理连接故障与绕过后的目标站故障；旧版本遇到无法判定的自动模式连接失败时会提示升级，避免被当作缺图忽略。
+
+浏览器按 HTTPS 登录页选定一次代理或直连，使用代理时由 Chromium 处理绕过列表。复杂绕过语法和子资源代理选择不保证三套传输完全一致，需要全部直连时使用 `--no-proxy`。
+
+代理失败不会自动改为直连，配置不写入登录态或工作区；改变出口可能需要重新登录。不承诺代理认证、HTTPS 代理服务器、SOCKS、PAC 或系统代理发现。
+
+库调用可通过 `new Wenku8Client({ proxy: 'http://127.0.0.1:7890' })` 指定代理，`proxy: false` 强制直连，省略则继承环境；连接由 HTTP 层自行释放。
+
 ## 登录态
 
 搜索、榜单、详情和下载等联网命令需要程序保存的账号登录态。首次使用、会话失效或升级自手动 Cookie 版本后，执行：

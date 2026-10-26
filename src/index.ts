@@ -10,6 +10,7 @@ export type {
 export { Downloader } from './service/downloader.js';
 export { EpubBuilder } from './epub/builder.js';
 export { Wenku8Client } from './site/client.js';
+export type { ProxyOptions } from './http/proxy.js';
 export type { DownloadOptions, DownloadResult } from './service/downloader.js';
 export type { IllustrationLayoutReport } from './service/illustration-layout.js';
 export { parseIllustrationMap, type IllustrationMap } from './domain/illustration-layout.js';
