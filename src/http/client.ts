@@ -459,15 +459,18 @@ async function runCurl(
     throw new NonRetryableHttpError('代理要求认证（HTTP 407），请使用无需认证的代理');
   // Let curl account for its own environment, user config and NO_PROXY rules.
   // Older curl can still classify an explicit proxy, but cannot report proxy_used.
+  const connectionFailure =
+    (exitCode === 7 || exitCode === 28) && statusText === '000' && connectStatus === '000';
   if (
     exitCode === 5 ||
-    (exitCode === 7 &&
-      (proxyUsed === '1' || typeof options.proxy === 'string') &&
-      statusText === '000' &&
-      connectStatus === '000')
+    (connectionFailure && (proxyUsed === '1' || typeof options.proxy === 'string'))
   )
-    throw new NonRetryableHttpError(`无法连接代理（curl 退出码 ${exitCode}）`);
-  if (exitCode === 7 && options.proxy === undefined && proxyUsed !== '0' && proxyUsed !== '1')
+    throw new NonRetryableHttpError(
+      exitCode === 28
+        ? '代理请求超时（curl 退出码 28）'
+        : `无法连接代理（curl 退出码 ${exitCode}）`,
+    );
+  if (connectionFailure && options.proxy === undefined && proxyUsed !== '0' && proxyUsed !== '1')
     throw new NonRetryableHttpError('curl 无法报告代理使用状态，请升级至 8.7 或更高版本后重试');
   if (exitCode !== 0) {
     throw new Error(`curl 请求失败（退出码 ${exitCode ?? '未知'}）`);

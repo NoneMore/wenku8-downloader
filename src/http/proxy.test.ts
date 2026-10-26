@@ -221,7 +221,7 @@ it('preserves curl user configuration in automatic mode', async () => {
   expect(await new HttpClient({ preferCurl: true, retries: 0 }).text(target)).toBe('configured');
 });
 
-it('keeps an internal proxy timeout fatal while preserving caller cancellation', async () => {
+it('keeps proxy timeouts fatal without changing caller cancellation or direct timeouts', async () => {
   let requests = 0;
   const cancel = new AbortController();
   const reason = new Error('caller cancelled');
@@ -243,6 +243,17 @@ it('keeps an internal proxy timeout fatal while preserving caller cancellation',
   );
   expect(cancelled.stats().automaticRetries).toBe(0);
   expect(requests).toBe(2);
+  const directTimeout: unknown = await new HttpClient({
+    preferCurl: true,
+    proxy: false,
+    timeoutMs: 100,
+    retries: 0,
+  })
+    .text(proxy)
+    .catch((error: unknown) => error);
+  expect(directTimeout).toBeInstanceOf(Error);
+  expect(directTimeout).not.toBeInstanceOf(NonRetryableHttpError);
+  expect(requests).toBe(3);
 });
 
 it('keeps a CIDR-excluded IP direct when Node environment proxy support is enabled', async () => {
