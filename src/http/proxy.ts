@@ -21,8 +21,8 @@ export function validateProxy(value: string): string {
   return url.origin;
 }
 
-export function resolveProxy(target: string, proxy?: string | false): string | undefined {
-  if (proxy === false) return undefined;
+export function resolveProxy(target: string, proxy?: string | false): string | false | undefined {
+  if (proxy === false) return false;
   if (proxy !== undefined) return validateProxy(proxy);
   const selected = getProxyForUrl(target);
   if (!selected) return undefined;
@@ -41,7 +41,7 @@ export function resolveProxy(target: string, proxy?: string | false): string | u
         /* Ignore unsupported entries, like native proxy resolvers. */
       }
     }
-    if (excluded.check(host, family)) return undefined;
+    if (excluded.check(host, family)) return false;
   }
   return validateProxy(selected);
 }

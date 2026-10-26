@@ -85,25 +85,31 @@ describe('Downloader', () => {
   it.each([
     new CloudflareChallengeError('https://www.wenku8.net/cover.jpg'),
     new NonRetryableHttpError('HTTP 请求无法恢复'),
+    'unreachable curl proxy',
   ])('propagates image authentication and proxy blocks even when missing images are allowed: %s', async (blocked) => {
-    const client = new Wenku8Client();
+    const client = new Wenku8Client(
+      typeof blocked === 'string'
+        ? { preferCurl: true, proxy: 'http://127.0.0.1:1', retries: 0 }
+        : {},
+    );
     const raw =
       '<div id="content"><span><b>封面认证测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
     const book = parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm');
     book.coverSourceUrl = 'https://www.wenku8.net/cover.jpg';
     vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
     vi.spyOn(client, 'getCatalogue').mockResolvedValue({ raw: '<table></table>', volumes: [] });
-    vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
+    if (typeof blocked !== 'string') vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
     const builder = new EpubBuilder();
     const build = vi.spyOn(builder, 'build');
     const root = await mkdtemp(path.join(os.tmpdir(), 'wenku8-image-auth-'));
-    await expect(
-      new Downloader(client, builder).download(42, {
-        workDirectory: root,
-        outputDirectory: root,
-        allowMissingImages: true,
-      }),
-    ).rejects.toBe(blocked);
+    const download = new Downloader(client, builder).download(42, {
+      workDirectory: root,
+      outputDirectory: root,
+      allowMissingImages: true,
+    });
+    if (typeof blocked === 'string')
+      await expect(download).rejects.toBeInstanceOf(NonRetryableHttpError);
+    else await expect(download).rejects.toBe(blocked);
     expect(build).not.toHaveBeenCalled();
   });
 

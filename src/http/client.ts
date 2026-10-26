@@ -286,7 +286,7 @@ export class HttpClient {
     const proxy = resolveProxy(url, this.proxy);
     const dispatcher = proxy
       ? new ProxyAgent({ uri: proxy, proxyTunnel: false, connectTimeout: this.timeoutMs })
-      : this.proxy === false
+      : proxy === false
         ? new Agent()
         : undefined;
     this.requestStats.fetchRequests += 1;
@@ -301,9 +301,13 @@ export class HttpClient {
       const response = await fetch(url, requestOptions);
       return { data: new Uint8Array(await response.arrayBuffer()), response };
     } catch (error) {
-      combinedSignal.throwIfAborted();
+      if (signal?.aborted) throw new AbortError(abortReason(signal));
       if (proxy)
-        throw new NonRetryableHttpError('代理请求失败，请检查代理连接、认证设置及目标证书');
+        throw new NonRetryableHttpError(
+          timeout.aborted
+            ? '代理请求超时，请检查代理连接'
+            : '代理请求失败，请检查代理连接、认证设置及目标证书',
+        );
       throw error;
     } finally {
       await dispatcher?.destroy();
@@ -453,6 +457,16 @@ async function runCurl(
     .split(';');
   if (markerIndex >= 0 && (statusText === '407' || connectStatus === '407'))
     throw new NonRetryableHttpError('代理要求认证（HTTP 407），请使用无需认证的代理');
+  // Exit 5 identifies proxy DNS failure. Exit 7 is also used for origin failures,
+  // so only classify it when an explicit proxy failed before any HTTP/CONNECT response.
+  if (
+    exitCode === 5 ||
+    (exitCode === 7 &&
+      typeof options.proxy === 'string' &&
+      statusText === '000' &&
+      connectStatus === '000')
+  )
+    throw new NonRetryableHttpError(`无法连接代理（curl 退出码 ${exitCode}）`);
   if (exitCode !== 0) {
     throw new Error(`curl 请求失败（退出码 ${exitCode ?? '未知'}）`);
   }

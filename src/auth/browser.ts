@@ -55,7 +55,7 @@ export async function loginInBrowser(
   let phase = '初始化浏览器';
   try {
     signal.throwIfAborted();
-    const server = resolveProxy(LOGIN_URL, options.proxy) ?? 'direct://';
+    const server = resolveProxy(LOGIN_URL, options.proxy) || 'direct://';
     const bypass =
       options.proxy === undefined
         ? process.env.no_proxy || process.env.NO_PROXY || ''

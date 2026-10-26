@@ -141,7 +141,7 @@ it('inherits common proxy variables and honors explicit overrides', () => {
   vi.stubEnv('no_proxy', '*');
   expect(resolveProxy('https://example.test')).toBeUndefined();
   expect(resolveProxy('https://example.test', 'http://forced.test')).toBe('http://forced.test');
-  expect(resolveProxy('https://example.test', false)).toBeUndefined();
+  expect(resolveProxy('https://example.test', false)).toBe(false);
 });
 
 it('does not reject unrelated NO_PROXY entries and keeps excluded IP ranges direct', () => {
@@ -152,7 +152,7 @@ it('does not reject unrelated NO_PROXY entries and keeps excluded IP ranges dire
   expect(resolveProxy('http://unrelated.test')).toBe('http://proxy.test');
   expect(resolveProxy('http://localhost')).toBeUndefined();
   expect(resolveProxy('https://example.test')).toBeUndefined();
-  expect(resolveProxy('http://10.2.3.4')).toBeUndefined();
+  expect(resolveProxy('http://10.2.3.4')).toBe(false);
   expect(resolveProxy('http://11.2.3.4')).toBe('http://proxy.test');
   vi.stubEnv('no_proxy', '10.0.0.0/,10.0.0.0/8/unsupported');
   expect(resolveProxy('http://11.2.3.4')).toBe('http://proxy.test');
@@ -221,6 +221,46 @@ it('preserves curl user configuration in automatic mode', async () => {
   expect(await new HttpClient({ preferCurl: true, retries: 0 }).text(target)).toBe('configured');
 });
 
+it('keeps an internal proxy timeout fatal while preserving caller cancellation', async () => {
+  let requests = 0;
+  const cancel = new AbortController();
+  const reason = new Error('caller cancelled');
+  const proxy = await listen(
+    createServer(() => {
+      requests += 1;
+      if (requests === 2) cancel.abort(reason);
+    }),
+  );
+  const timedOut = new HttpClient({ proxy, timeoutMs: 500, retries: 2, minDelayMs: 1 });
+  await expect(timedOut.text('http://example.test/image')).rejects.toBeInstanceOf(
+    NonRetryableHttpError,
+  );
+  expect(timedOut.stats().automaticRetries).toBe(0);
+  expect(requests).toBe(1);
+  const cancelled = new HttpClient({ proxy, timeoutMs: 5_000, retries: 2, minDelayMs: 1 });
+  await expect(cancelled.text('http://example.test/image', 'utf-8', cancel.signal)).rejects.toBe(
+    reason,
+  );
+  expect(cancelled.stats().automaticRetries).toBe(0);
+  expect(requests).toBe(2);
+});
+
+it('keeps a CIDR-excluded IP direct when Node environment proxy support is enabled', async () => {
+  const target = await listen(createServer((_request, response) => response.end('direct')));
+  const proxy = await proxyServer();
+  const result = await runProgram(
+    `import {HttpClient} from ${JSON.stringify(new URL('./client.ts', import.meta.url).href)};
+    console.log(await new HttpClient({retries:0}).text(${JSON.stringify(target)}));`,
+    {
+      NODE_USE_ENV_PROXY: '1',
+      http_proxy: proxy.url,
+      no_proxy: '127.0.0.0/8',
+    },
+  );
+  expect(result.stdout.trim()).toBe('direct');
+  expect(proxy.hits).toHaveLength(0);
+});
+
 it.each([false, true])(
   'uses HTTPS CONNECT and retains certificate verification (curl=%s)',
   async (preferCurl) => {
@@ -261,7 +301,12 @@ it.each([false, true])(
     ).rejects.toBeInstanceOf(NonRetryableHttpError);
     await expect(
       new HttpClient({ ...options, proxy: 'http://127.0.0.1:1' }).text(target),
-    ).rejects.toThrow();
+    ).rejects.toBeInstanceOf(NonRetryableHttpError);
+    const originError: unknown = await new HttpClient({ ...options, proxy: false })
+      .text('http://127.0.0.1:1')
+      .catch((error: unknown) => error);
+    expect(originError).toBeInstanceOf(Error);
+    expect(originError).not.toBeInstanceOf(NonRetryableHttpError);
     expect(directHits).toBe(0);
   },
 );
