@@ -450,23 +450,25 @@ async function runCurl(
   if (options.signal?.aborted) throw new AbortError(abortReason(options.signal));
   const buffer = Buffer.concat(stdout);
   const markerIndex = buffer.lastIndexOf(marker);
-  const [statusText, connectStatus] = buffer
+  const [statusText, connectStatus, proxyUsed] = buffer
     .subarray(markerIndex + marker.length)
     .toString('utf8')
     .trim()
     .split(';');
   if (markerIndex >= 0 && (statusText === '407' || connectStatus === '407'))
     throw new NonRetryableHttpError('代理要求认证（HTTP 407），请使用无需认证的代理');
-  // Exit 5 identifies proxy DNS failure. Exit 7 is also used for origin failures,
-  // so only classify it when an explicit proxy failed before any HTTP/CONNECT response.
+  // Let curl account for its own environment, user config and NO_PROXY rules.
+  // Older curl can still classify an explicit proxy, but cannot report proxy_used.
   if (
     exitCode === 5 ||
     (exitCode === 7 &&
-      typeof options.proxy === 'string' &&
+      (proxyUsed === '1' || typeof options.proxy === 'string') &&
       statusText === '000' &&
       connectStatus === '000')
   )
     throw new NonRetryableHttpError(`无法连接代理（curl 退出码 ${exitCode}）`);
+  if (exitCode === 7 && options.proxy === undefined && proxyUsed !== '0' && proxyUsed !== '1')
+    throw new NonRetryableHttpError('curl 无法报告代理使用状态，请升级至 8.7 或更高版本后重试');
   if (exitCode !== 0) {
     throw new Error(`curl 请求失败（退出码 ${exitCode ?? '未知'}）`);
   }
@@ -514,7 +516,7 @@ function curlConfig(url: string, options: CurlOptions, marker: string): string {
     ...(options.method
       ? [`request = "POST"`, `data-raw = "${escapeCurlConfig(options.body ?? '')}"`]
       : []),
-    `write-out = "${escapeCurlConfig(`${marker}%{http_code};%{http_connect}`)}"`,
+    `write-out = "${escapeCurlConfig(`${marker}%{http_code};%{http_connect};%{proxy_used}`)}"`,
     '',
   ].join('\n');
 }

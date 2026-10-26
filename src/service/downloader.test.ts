@@ -86,16 +86,23 @@ describe('Downloader', () => {
     new CloudflareChallengeError('https://www.wenku8.net/cover.jpg'),
     new NonRetryableHttpError('HTTP 请求无法恢复'),
     'unreachable curl proxy',
+    'unreachable curl environment proxy',
   ])('propagates image authentication and proxy blocks even when missing images are allowed: %s', async (blocked) => {
+    const environmentProxy = blocked === 'unreachable curl environment proxy';
+    if (environmentProxy) {
+      vi.stubEnv('http_proxy', 'http://127.0.0.1:1');
+      vi.stubEnv('no_proxy', '');
+      vi.stubEnv('NO_PROXY', '');
+    }
     const client = new Wenku8Client(
       typeof blocked === 'string'
-        ? { preferCurl: true, proxy: 'http://127.0.0.1:1', retries: 0 }
+        ? { preferCurl: true, retries: 0, ...(environmentProxy ? {} : { proxy: 'http://127.0.0.1:1' }) }
         : {},
     );
     const raw =
       '<div id="content"><span><b>封面认证测试</b></span><div>小说作者：测试作者</div><a href="/novel/42/index.htm">目录</a><div id="contentmain">测试简介</div></div>';
     const book = parseBookDetails(raw, 42, 'https://www.wenku8.net/book/42.htm');
-    book.coverSourceUrl = 'https://www.wenku8.net/cover.jpg';
+    book.coverSourceUrl = `${environmentProxy ? 'http' : 'https'}://www.wenku8.net/cover.jpg`;
     vi.spyOn(client, 'getBookDetails').mockResolvedValue({ raw, book });
     vi.spyOn(client, 'getCatalogue').mockResolvedValue({ raw: '<table></table>', volumes: [] });
     if (typeof blocked !== 'string') vi.spyOn(client.http, 'bytes').mockRejectedValue(blocked);
@@ -176,6 +183,7 @@ describe('Downloader', () => {
   const servers: ReturnType<typeof createServer>[] = [];
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await Promise.all(
       servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     );

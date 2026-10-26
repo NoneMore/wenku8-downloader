@@ -90,7 +90,7 @@ Manifest schema、资源状态、缓存复用及目录语义均属于兼容性�
 
 - `Wenku8Client` 负责站点地址、正文/目录/搜索接口与编码处理；页面结构差异应尽量封装在 `src/site/` 并覆盖解析测试。
 - `HttpClient` 集中封装队列并发、每秒请求上限、重试、超时、HTTP 429 冷却及按当前条件启用的 curl 回退，避免下载、图片与 CLI 各自建立不一致的网络策略。
-- [`src/http/proxy.ts`](../../src/http/proxy.ts) 使用 `proxy-from-env` 为 Node 选择环境代理，补足 IP 字面量的有效 CIDR 排除；代理、显式直连或 CIDR 排除的 dispatcher 在响应或失败后自行释放，未配置代理时保留普通 fetch。curl 自动模式保留原生环境和配置，仅在显式代理或直连时覆盖必要选项。HTTP 层将配置、确定的代理连接或认证失败及 Node 代理内部超时归为通用不可恢复错误，由既有终止路径传播；调用方取消保留原原因并停止重试。
+- [`src/http/proxy.ts`](../../src/http/proxy.ts) 使用 `proxy-from-env` 为 Node 选择环境代理，补足 IP 字面量的有效 CIDR 排除；代理、显式直连或 CIDR 排除的 dispatcher 在响应或失败后自行释放，未配置代理时保留普通 fetch。curl 自动模式保留原生环境和配置，仅在显式代理或直连时覆盖必要选项，并读取原生 `proxy_used` 区分环境代理连接故障与绕过后的目标站故障。HTTP 层将配置、确定的代理连接或认证失败及 Node 代理内部超时归为通用不可恢复错误，由既有终止路径传播；调用方取消保留原原因并停止重试。
 - CLI 的 `--proxy` / `--no-proxy` 适用于普通命令、交互和登录交接，不持久化。浏览器通过 Playwright 原生代理按 HTTPS 登录页选定代理或直连，再由 Chromium 处理绕过；不维护转发服务，也不承诺三套传输的全部边缘行为一致。
 - [`src/auth/login.ts`](../../src/auth/login.ts) 使用账号密码完成站点认证，必要时交给 [`src/auth/browser.ts`](../../src/auth/browser.ts) 启动 Playwright 管理的独立可见浏览器。浏览器正常提交站点表单，人工验证由用户完成；结束时自动关闭浏览器上下文，不读取日常浏览器资料。
 - [`src/site/auth.ts`](../../src/site/auth.ts) 封装登录表单、GBK 提交编码、账号页面证据及登录失效页面的识别。认证后必须用实际 CLI HTTP 传输验证账号页面，才能保存新会话；浏览器成功不代表交接必然成功。

@@ -302,7 +302,9 @@ it.each([false, true])(
     await expect(
       new HttpClient({ ...options, proxy: 'http://127.0.0.1:1' }).text(target),
     ).rejects.toBeInstanceOf(NonRetryableHttpError);
-    const originError: unknown = await new HttpClient({ ...options, proxy: false })
+    vi.stubEnv('http_proxy', 'http://127.0.0.1:1');
+    vi.stubEnv('no_proxy', '127.0.0.1');
+    const originError: unknown = await new HttpClient(options)
       .text('http://127.0.0.1:1')
       .catch((error: unknown) => error);
     expect(originError).toBeInstanceOf(Error);
