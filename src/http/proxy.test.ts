@@ -308,7 +308,11 @@ it.each([false, true])(
       .text('http://127.0.0.1:1')
       .catch((error: unknown) => error);
     expect(originError).toBeInstanceOf(Error);
-    expect(originError).not.toBeInstanceOf(NonRetryableHttpError);
+    if (preferCurl && originError instanceof NonRetryableHttpError) {
+      const { stdout } = await execFileAsync('curl', ['--version']);
+      expect(stdout).toMatch(/^curl (?:[0-7]\.|8\.[0-6]\.)/);
+      expect(originError.message).toContain('curl 无法报告代理使用状态');
+    } else expect(originError).not.toBeInstanceOf(NonRetryableHttpError);
     expect(directHits).toBe(0);
   },
 );
